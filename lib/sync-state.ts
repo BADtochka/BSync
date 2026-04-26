@@ -29,6 +29,7 @@ export interface SyncState {
   peerCount: number;
   latencyMs: number;
   progressPercent: number;
+  roomMedia: MediaSyncState | null;
   position: OverlayPosition;
   lastSyncedAt: number | null;
   connectedAt: number | null;
@@ -187,6 +188,7 @@ export const DEFAULT_SYNC_STATE: SyncState = {
   peerCount: 1,
   latencyMs: 0,
   progressPercent: 0,
+  roomMedia: null,
   position: 'top-right',
   lastSyncedAt: null,
   connectedAt: null,

@@ -322,13 +322,19 @@ export default defineBackground(() => {
         );
         break;
       case 'media:update':
-        if (activeState.roomRole === 'guest' && !activeState.followHost) return;
+        const shouldApplyMedia =
+          activeState.roomRole !== 'guest' || activeState.followHost;
 
-        await applyRemoteMediaState(message.media);
+        if (shouldApplyMedia) {
+          await applyRemoteMediaState(message.media);
+        }
         await patchSyncState((state) => ({
           ...state,
-          status: message.media.paused ? 'paused' : 'synced',
+          ...(shouldApplyMedia
+            ? { status: message.media.paused ? 'paused' : 'synced' }
+            : {}),
           progressPercent: getMediaProgressPercent(message.media),
+          roomMedia: message.media,
           lastSyncedAt: Date.now(),
         }));
         break;
@@ -383,6 +389,7 @@ export default defineBackground(() => {
       ...state,
       status: nextStatus,
       progressPercent: getMediaProgressPercent(media),
+      roomMedia: media,
       lastSyncedAt: Date.now(),
     }));
 
@@ -411,6 +418,7 @@ export default defineBackground(() => {
           followHost: false,
           detachedReason: reason,
           status: media.paused ? 'paused' : state.status,
+          roomMedia: state.roomMedia ?? media,
         },
         'Detached from host playback',
         'warning',

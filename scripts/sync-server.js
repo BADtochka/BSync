@@ -66,6 +66,19 @@ function leaveRoom(ws) {
   broadcastPresence(roomCode);
 }
 
+function getCurrentMediaState(media) {
+  if (!media || media.paused) return media;
+
+  const elapsedSeconds = Math.max(0, (Date.now() - media.updatedAt) / 1000);
+  const currentTime = media.currentTime + elapsedSeconds * (media.playbackRate || 1);
+
+  return {
+    ...media,
+    currentTime: media.duration ? Math.min(currentTime, media.duration) : currentTime,
+    updatedAt: Date.now(),
+  };
+}
+
 Bun.serve({
   port,
   fetch(request, server) {
@@ -136,11 +149,13 @@ Bun.serve({
         });
 
         if (room.lastMedia && room.hostClientId !== clientId) {
+          const currentMedia = getCurrentMediaState(room.lastMedia);
+          room.lastMedia = currentMedia;
           send(ws, {
             type: 'media:update',
             roomCode,
             clientId: room.hostClientId,
-            media: room.lastMedia,
+            media: currentMedia,
           });
         }
 
@@ -205,14 +220,17 @@ Bun.serve({
           return;
         }
 
-        room.lastMedia = message.media;
+        room.lastMedia = {
+          ...message.media,
+          updatedAt: Date.now(),
+        };
         broadcast(
           roomCode,
           {
             type: 'media:update',
             roomCode,
             clientId,
-            media: message.media,
+            media: room.lastMedia,
           },
           clientId,
         );
@@ -222,11 +240,13 @@ Bun.serve({
       if (message.type === 'media:request') {
         const room = getRoom(roomCode);
         if (room.lastMedia && room.hostClientId) {
+          const currentMedia = getCurrentMediaState(room.lastMedia);
+          room.lastMedia = currentMedia;
           send(ws, {
             type: 'media:update',
             roomCode,
             clientId: room.hostClientId,
-            media: room.lastMedia,
+            media: currentMedia,
           });
         }
         return;
