@@ -71,19 +71,22 @@ export type TabSyncStateMap = Record<string, TabSyncState>;
 
 export type ContentPageSnapshot = Omit<TabSyncState, 'tabId' | 'updatedAt'>;
 
-export type BsyncRuntimeMessage = {
-  type: 'bsync:tab-page';
-  payload: ContentPageSnapshot;
-} | {
-  type: 'bsync:media-state';
-  payload: MediaSyncState;
-} | {
-  type: 'bsync:media-detach';
-  payload: {
-    reason: string;
-    media: MediaSyncState;
-  };
-};
+export type BsyncRuntimeMessage =
+  | {
+      type: 'bsync:tab-page';
+      payload: ContentPageSnapshot;
+    }
+  | {
+      type: 'bsync:media-state';
+      payload: MediaSyncState;
+    }
+  | {
+      type: 'bsync:media-detach';
+      payload: {
+        reason: string;
+        media: MediaSyncState;
+      };
+    };
 
 export type BsyncContentMessage = {
   type: 'bsync:media-apply';
@@ -174,7 +177,7 @@ export const DEFAULT_SYNC_STATE: SyncState = {
   status: 'idle',
   transportEnabled: false,
   transportStatus: 'offline',
-  serverUrl: 'ws://localhost:8787',
+  serverUrl: import.meta.env.WXT_WS_SERVER,
   clientId: `client-${Math.random().toString(36).slice(2, 10)}`,
   roomCode: '000000',
   roomRole: 'none',
@@ -264,11 +267,7 @@ export function generateRoomCode(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-export function addActivity(
-  state: SyncState,
-  label: string,
-  tone: SyncActivity['tone'] = 'info',
-): SyncState {
+export function addActivity(state: SyncState, label: string, tone: SyncActivity['tone'] = 'info'): SyncState {
   return {
     ...state,
     activity: [
@@ -283,9 +282,7 @@ export function addActivity(
   };
 }
 
-export async function updateSyncState(
-  updater: (state: SyncState) => SyncState,
-): Promise<SyncState> {
+export async function updateSyncState(updater: (state: SyncState) => SyncState): Promise<SyncState> {
   const current = await syncStateItem.getValue();
   const next = updater(current);
   await syncStateItem.setValue(next);

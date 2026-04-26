@@ -10,8 +10,7 @@ export default defineConfig({
       default_title: 'BSync',
     },
     content_security_policy: {
-      extension_pages:
-        "script-src 'self'; object-src 'self'; connect-src 'self' ws://localhost:* wss://*;",
+      extension_pages: "script-src 'self'; object-src 'self'; connect-src 'self' ws://localhost:* wss://*;",
     },
     ...(browser === 'firefox'
       ? {

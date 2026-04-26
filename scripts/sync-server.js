@@ -1,4 +1,5 @@
-const port = Number(process.env.BSYNC_PORT || 8787);
+const wsServer = new URL(process.env.WXT_WS_SERVER || 'ws://localhost:8787');
+const port = Number(wsServer.port);
 const rooms = new Map();
 
 function getRoom(roomCode) {
