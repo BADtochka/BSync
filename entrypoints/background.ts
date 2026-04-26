@@ -12,6 +12,7 @@ import {
   type ContentPageSnapshot,
   type MediaSyncState,
   type RoomTargetPage,
+  type SyncActivity,
   type SyncState,
 } from '@/lib/sync-state';
 
@@ -59,8 +60,16 @@ function getMediaProgressPercent(media: MediaSyncState): number {
   return Math.max(0, Math.min(100, Math.round((media.currentTime / media.duration) * 100)));
 }
 
+function getMediaActivityLabel(media: MediaSyncState): string {
+  return `${media.paused ? 'paused' : 'playing'} ${Math.round(media.currentTime)}s${
+    media.duration ? `/${Math.round(media.duration)}s` : ''
+  }`;
+}
+
 const UNSTABLE_LATENCY_MS = 2500;
 const CONNECT_TIMEOUT_MS = 8000;
+const MEDIA_ACTIVITY_THROTTLE_MS = 5000;
+const MEDIA_APPLY_ACK_TIMEOUT_MS = 4000;
 
 export default defineBackground(() => {
   let socket: WebSocket | null = null;
@@ -76,6 +85,8 @@ export default defineBackground(() => {
   let lastRoomTargetKey = '';
   let lastMediaKey = '';
   let lastEnsuredTargetUrl = '';
+  const activityLogAt = new Map<string, number>();
+  const pendingMediaApplyTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const refreshBadge = async () => {
     const actionApi = getBadgeActionApi();
@@ -97,6 +108,20 @@ export default defineBackground(() => {
     const next = updater(current);
     await syncStateItem.setValue(next);
     return next;
+  };
+
+  const logActivity = (
+    label: string,
+    tone: SyncActivity['tone'] = 'info',
+    key = label,
+    throttleMs = 0,
+  ) => {
+    const now = Date.now();
+    const previousLogAt = activityLogAt.get(key) ?? 0;
+    if (throttleMs > 0 && now - previousLogAt < throttleMs) return;
+
+    activityLogAt.set(key, now);
+    patchSyncState((state) => addActivity(state, label, tone)).catch(console.error);
   };
 
   const ensureTargetPageTab = async (targetPage: RoomTargetPage) => {
@@ -193,24 +218,40 @@ export default defineBackground(() => {
     if (mediaKey === lastMediaKey) return;
 
     lastMediaKey = mediaKey;
-    send({
+    const sent = send({
       type: 'media:update',
       roomCode: state.roomCode,
       clientId: state.clientId,
       media,
       sentAt: Date.now(),
     });
+
+    logActivity(
+      sent
+        ? `Media host published: ${getMediaActivityLabel(media)}`
+        : 'Media host publish skipped: socket offline',
+      sent ? 'info' : 'warning',
+      'media:host-publish',
+      MEDIA_ACTIVITY_THROTTLE_MS,
+    );
   };
 
   const requestHostMediaState = (state: SyncState) => {
     if (state.roomRole !== 'guest' || !state.followHost) return;
 
-    send({
+    const sent = send({
       type: 'media:request',
       roomCode: state.roomCode,
       clientId: state.clientId,
       sentAt: Date.now(),
     });
+
+    logActivity(
+      sent ? 'Media follow requested from host' : 'Media follow request skipped: socket offline',
+      sent ? 'info' : 'warning',
+      'media:follow-request',
+      MEDIA_ACTIVITY_THROTTLE_MS,
+    );
   };
 
   const publishCurrentState = (state: SyncState) => {
@@ -223,9 +264,13 @@ export default defineBackground(() => {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     if (pingTimer) clearInterval(pingTimer);
     if (connectTimeoutTimer) clearTimeout(connectTimeoutTimer);
+    for (const timer of pendingMediaApplyTimers.values()) {
+      clearTimeout(timer);
+    }
     reconnectTimer = null;
     pingTimer = null;
     connectTimeoutTimer = null;
+    pendingMediaApplyTimers.clear();
   };
 
   const closeSocket = () => {
@@ -325,6 +370,15 @@ export default defineBackground(() => {
         const shouldApplyMedia =
           activeState.roomRole !== 'guest' || activeState.followHost;
 
+        logActivity(
+          shouldApplyMedia
+            ? `Media host received: ${getMediaActivityLabel(message.media)}`
+            : `Media host received while detached: ${getMediaActivityLabel(message.media)}`,
+          shouldApplyMedia ? 'info' : 'warning',
+          shouldApplyMedia ? 'media:host-received' : 'media:host-received-detached',
+          MEDIA_ACTIVITY_THROTTLE_MS,
+        );
+
         if (shouldApplyMedia) {
           await applyRemoteMediaState(message.media);
         }
@@ -356,7 +410,15 @@ export default defineBackground(() => {
 
   const applyRemoteMediaState = async (media: MediaSyncState) => {
     const latestState = activeState ?? (await syncStateItem.getValue());
-    if (!latestState.targetPage) return;
+    if (!latestState.targetPage) {
+      logActivity(
+        'Media apply skipped: no room page selected',
+        'warning',
+        'media:apply-no-target',
+        MEDIA_ACTIVITY_THROTTLE_MS,
+      );
+      return;
+    }
 
     const tabs = await browser.tabs.query({});
     const targetTabs = tabs.filter((tab) => {
@@ -364,15 +426,59 @@ export default defineBackground(() => {
       return isRoomTargetUrl(latestState.targetPage, tab.url);
     });
 
+    if (targetTabs.length === 0) {
+      logActivity(
+        'Media apply skipped: room page tab not found',
+        'warning',
+        'media:apply-no-tab',
+        MEDIA_ACTIVITY_THROTTLE_MS,
+      );
+      return;
+    }
+
+    logActivity(
+      `Media apply sent to ${targetTabs.length} tab${targetTabs.length === 1 ? '' : 's'}: ${getMediaActivityLabel(media)}`,
+      'info',
+      'media:apply-sent',
+      MEDIA_ACTIVITY_THROTTLE_MS,
+    );
+
     await Promise.all(
       targetTabs.map((tab) => {
         if (tab.id == null) return Promise.resolve();
+        const applyKey = `${tab.id}|${makeMediaKey(media)}`;
+        const existingTimer = pendingMediaApplyTimers.get(applyKey);
+        if (existingTimer) clearTimeout(existingTimer);
+
+        pendingMediaApplyTimers.set(
+          applyKey,
+          setTimeout(() => {
+            pendingMediaApplyTimers.delete(applyKey);
+            logActivity(
+              `Media apply ack timeout: tab ${tab.id}`,
+              'warning',
+              `media:apply-timeout:${tab.id}`,
+              MEDIA_ACTIVITY_THROTTLE_MS,
+            );
+          }, MEDIA_APPLY_ACK_TIMEOUT_MS),
+        );
+
         return browser.tabs
           .sendMessage(tab.id, {
             type: 'bsync:media-apply',
             payload: media,
           })
-          .catch(() => undefined);
+          .catch((error) => {
+            const timer = pendingMediaApplyTimers.get(applyKey);
+            if (timer) clearTimeout(timer);
+            pendingMediaApplyTimers.delete(applyKey);
+            logActivity(
+              `Media apply failed to send: tab ${tab.id} (${error instanceof Error ? error.message : 'content script unavailable'})`,
+              'error',
+              `media:apply-send-failed:${tab.id}`,
+              MEDIA_ACTIVITY_THROTTLE_MS,
+            );
+          });
       }),
     );
   };
@@ -420,7 +526,7 @@ export default defineBackground(() => {
           status: media.paused ? 'paused' : state.status,
           roomMedia: state.roomMedia ?? media,
         },
-        'Detached from host playback',
+        `Detached from host playback: ${reason}, local ${getMediaActivityLabel(media)}`,
         'warning',
       ),
     );
@@ -607,6 +713,36 @@ export default defineBackground(() => {
 
     if (message.type === 'bsync:media-detach') {
       detachFromHost(message.payload.reason, message.payload.media).catch(console.error);
+      return;
+    }
+
+    if (message.type === 'bsync:media-applied') {
+      const applyKey = `${sender.tab.id}|${makeMediaKey(message.payload.requested)}`;
+      const timer = pendingMediaApplyTimers.get(applyKey);
+      if (timer) clearTimeout(timer);
+      pendingMediaApplyTimers.delete(applyKey);
+
+      logActivity(
+        `Media applied: drift ${message.payload.driftSeconds}s, local ${getMediaActivityLabel(message.payload.after)}`,
+        message.payload.driftSeconds <= 1 ? 'success' : 'warning',
+        `media:applied:${sender.tab.id}`,
+        MEDIA_ACTIVITY_THROTTLE_MS,
+      );
+      return;
+    }
+
+    if (message.type === 'bsync:media-apply-failed') {
+      const applyKey = `${sender.tab.id}|${makeMediaKey(message.payload.requested)}`;
+      const timer = pendingMediaApplyTimers.get(applyKey);
+      if (timer) clearTimeout(timer);
+      pendingMediaApplyTimers.delete(applyKey);
+
+      logActivity(
+        `Media apply failed: ${message.payload.reason}`,
+        'error',
+        `media:apply-failed:${sender.tab.id}`,
+        MEDIA_ACTIVITY_THROTTLE_MS,
+      );
     }
   });
 

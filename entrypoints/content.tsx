@@ -75,6 +75,10 @@ function getMediaDriftLabel(hostMedia: MediaSyncState | null, localMedia: MediaS
   return `${driftSeconds}s drift${playbackState}`;
 }
 
+function getMediaDriftSeconds(left: MediaSyncState, right: MediaSyncState): number {
+  return Math.round(Math.abs(left.currentTime - right.currentTime) * 10) / 10;
+}
+
 async function applyMediaState(media: HTMLMediaElement, remoteState: MediaSyncState) {
   if (Number.isFinite(remoteState.playbackRate) && media.playbackRate !== remoteState.playbackRate) {
     media.playbackRate = remoteState.playbackRate;
@@ -263,11 +267,45 @@ function SyncOverlay() {
       if (candidate?.type !== 'bsync:media-apply') return;
 
       const media = getPrimaryMediaElement();
-      if (!media) return;
+      if (!media) {
+        browser.runtime
+          .sendMessage({
+            type: 'bsync:media-apply-failed',
+            payload: {
+              requested: candidate.payload,
+              reason: 'No media element on page',
+            },
+          })
+          .catch(() => undefined);
+        return;
+      }
 
+      const before = getMediaState(media);
       suppressMediaPublishUntilRef.current = Date.now() + 1200;
       applyMediaState(media, candidate.payload)
-        .catch(console.error);
+        .then(() => {
+          const after = getMediaState(media);
+          return browser.runtime.sendMessage({
+            type: 'bsync:media-applied',
+            payload: {
+              requested: candidate.payload,
+              before,
+              after,
+              driftSeconds: getMediaDriftSeconds(candidate.payload, after),
+            },
+          });
+        })
+        .catch((error) => {
+          browser.runtime
+            .sendMessage({
+              type: 'bsync:media-apply-failed',
+              payload: {
+                requested: candidate.payload,
+                reason: error instanceof Error ? error.message : 'Media apply failed',
+              },
+            })
+            .catch(() => undefined);
+        });
     };
 
     browser.runtime.onMessage.addListener(messageListener);

@@ -87,6 +87,22 @@ export type BsyncRuntimeMessage =
         reason: string;
         media: MediaSyncState;
       };
+    }
+  | {
+      type: 'bsync:media-applied';
+      payload: {
+        requested: MediaSyncState;
+        before: MediaSyncState;
+        after: MediaSyncState;
+        driftSeconds: number;
+      };
+    }
+  | {
+      type: 'bsync:media-apply-failed';
+      payload: {
+        requested: MediaSyncState;
+        reason: string;
+      };
     };
 
 export type BsyncContentMessage = {
@@ -212,7 +228,9 @@ export function isBsyncRuntimeMessage(message: unknown): message is BsyncRuntime
   return (
     (candidate.type === 'bsync:tab-page' && typeof candidate.payload?.url === 'string') ||
     (candidate.type === 'bsync:media-state' && typeof candidate.payload?.currentTime === 'number') ||
-    (candidate.type === 'bsync:media-detach' && typeof candidate.payload?.reason === 'string')
+    (candidate.type === 'bsync:media-detach' && typeof candidate.payload?.reason === 'string') ||
+    (candidate.type === 'bsync:media-applied' && typeof candidate.payload?.driftSeconds === 'number') ||
+    (candidate.type === 'bsync:media-apply-failed' && typeof candidate.payload?.reason === 'string')
   );
 }
 
@@ -280,7 +298,7 @@ export function addActivity(state: SyncState, label: string, tone: SyncActivity[
         tone,
       },
       ...state.activity,
-    ].slice(0, 5),
+    ].slice(0, 20),
   };
 }
 
