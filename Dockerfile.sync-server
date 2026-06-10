@@ -1,0 +1,12 @@
+FROM oven/bun:1.2-alpine
+
+WORKDIR /app
+
+ENV NODE_ENV=production \
+    WXT_WS_SERVER=ws://0.0.0.0:8787
+
+COPY scripts/sync-server.js ./scripts/sync-server.js
+
+EXPOSE 8787
+
+CMD ["bun", "./scripts/sync-server.js"]
