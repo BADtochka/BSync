@@ -1,4 +1,5 @@
 const wsServer = new URL(process.env.WXT_WS_SERVER || 'ws://localhost:8787');
+console.log(wsServer);
 const port = Number(wsServer.port);
 const rooms = new Map();
 
