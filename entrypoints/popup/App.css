@@ -271,6 +271,31 @@
   opacity: 0.75;
 }
 
+.focus-request {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 10px;
+  color: #075078;
+  background: #eef8ff;
+  border: 1px solid #c7e6ff;
+  border-radius: 8px;
+}
+
+.focus-request span {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.focus-request strong {
+  overflow: hidden;
+  color: #112833;
+  font-size: 12px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session-panel input {
   width: 100%;
   height: 38px;

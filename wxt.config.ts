@@ -7,7 +7,7 @@ export default defineConfig({
   manifest: ({ browser }) => ({
     name: 'BSync',
     description: 'Interactive browser sync overlay built with WXT and React.',
-    permissions: ['storage', 'tabs'],
+    permissions: ['storage', 'tabs', 'notifications'],
     action: {
       default_title: 'BSync',
     },

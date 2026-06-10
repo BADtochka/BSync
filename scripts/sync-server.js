@@ -211,6 +211,30 @@ Bun.serve({
         return;
       }
 
+      if (message.type === 'room:focus' && message.targetPage) {
+        const room = getRoom(roomCode);
+        if (room.hostClientId !== clientId) {
+          send(ws, {
+            type: 'error',
+            message: 'Only the host can focus the room page',
+          });
+          return;
+        }
+
+        room.targetPage = message.targetPage;
+        broadcast(
+          roomCode,
+          {
+            type: 'room:focus',
+            roomCode,
+            clientId,
+            targetPage: message.targetPage,
+          },
+          clientId,
+        );
+        return;
+      }
+
       if (message.type === 'media:update' && message.media) {
         const room = getRoom(roomCode);
         if (room.hostClientId !== clientId) {

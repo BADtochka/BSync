@@ -35,6 +35,7 @@ export interface SyncState {
   connectedAt: number | null;
   lastTransportError: string | null;
   targetPage: RoomTargetPage | null;
+  pendingFocusRequest: RoomFocusRequest | null;
   activity: SyncActivity[];
 }
 
@@ -56,6 +57,12 @@ export interface RoomTargetPage {
   normalizedUrl: string;
   hostname: string;
   createdAt: number;
+}
+
+export interface RoomFocusRequest {
+  id: string;
+  targetPage: RoomTargetPage;
+  requestedAt: number;
 }
 
 export interface TabSyncState {
@@ -128,6 +135,13 @@ export type BsyncWsClientMessage =
       sentAt: number;
     }
   | {
+      type: 'room:focus';
+      roomCode: string;
+      clientId: string;
+      targetPage: RoomTargetPage;
+      sentAt: number;
+    }
+  | {
       type: 'media:update';
       roomCode: string;
       clientId: string;
@@ -163,6 +177,13 @@ export type BsyncWsServerMessage =
     }
   | {
       type: 'room:update';
+      roomCode: string;
+      clientId: string;
+      targetPage: RoomTargetPage;
+      sentAt: number;
+    }
+  | {
+      type: 'room:focus';
       roomCode: string;
       clientId: string;
       targetPage: RoomTargetPage;
@@ -210,6 +231,7 @@ export const DEFAULT_SYNC_STATE: SyncState = {
   connectedAt: null,
   lastTransportError: null,
   targetPage: null,
+  pendingFocusRequest: null,
   activity: [],
 };
 

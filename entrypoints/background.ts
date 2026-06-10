@@ -70,6 +70,7 @@ const UNSTABLE_LATENCY_MS = 2500;
 const CONNECT_TIMEOUT_MS = 8000;
 const MEDIA_ACTIVITY_THROTTLE_MS = 5000;
 const MEDIA_APPLY_ACK_TIMEOUT_MS = 4000;
+const FOCUS_NOTIFICATION_PREFIX = 'bsync-focus';
 
 export default defineBackground(() => {
   let socket: WebSocket | null = null;
@@ -170,6 +171,71 @@ export default defineBackground(() => {
     );
   };
 
+  const showFocusNotification = async (targetPage: RoomTargetPage, roomCode: string) => {
+    const notificationsApi = browser.notifications;
+    if (!notificationsApi?.create) return;
+
+    await notificationsApi
+      .create(`${FOCUS_NOTIFICATION_PREFIX}-${roomCode}-${targetPage.createdAt}`, {
+        type: 'basic',
+        iconUrl: browser.runtime.getURL('/icon/128.png'),
+        title: 'BSync host switched page',
+        message: targetPage.hostname
+          ? `${targetPage.title} · ${targetPage.hostname}`
+          : targetPage.title,
+        buttons: [
+          { title: 'В текущей' },
+          { title: 'В новой' },
+        ],
+      })
+      .catch(() => undefined);
+  };
+
+  const openFocusTarget = async (mode: 'current' | 'new') => {
+    const latestState = await syncStateItem.getValue();
+    const focusRequest = latestState.pendingFocusRequest;
+    if (!focusRequest) return;
+
+    const { targetPage } = focusRequest;
+
+    if (mode === 'new') {
+      await browser.tabs.create({
+        url: targetPage.url,
+        active: true,
+      });
+    } else {
+      const [activeTab] = await browser.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+
+      if (activeTab?.id != null) {
+        await browser.tabs.update(activeTab.id, {
+          url: targetPage.url,
+          active: true,
+        });
+      } else {
+        await browser.tabs.create({
+          url: targetPage.url,
+          active: true,
+        });
+      }
+    }
+
+    await patchSyncState((state) =>
+      addActivity(
+        {
+          ...state,
+          targetPage,
+          overlayVisible: true,
+          pendingFocusRequest: null,
+        },
+        `Focused room page ${mode === 'new' ? 'in new tab' : 'in current tab'}`,
+        'success',
+      ),
+    );
+  };
+
   const send = (message: BsyncWsClientMessage) => {
     if (socket?.readyState !== WebSocket.OPEN) return false;
     socket.send(JSON.stringify(message));
@@ -180,7 +246,12 @@ export default defineBackground(() => {
     [state.serverUrl, state.roomCode, state.clientId, state.displayName].join('|');
 
   const makeRoomTargetKey = (state: SyncState) =>
-    [state.roomCode, state.clientId, state.targetPage?.normalizedUrl ?? 'none'].join('|');
+    [
+      state.roomCode,
+      state.clientId,
+      state.targetPage?.normalizedUrl ?? 'none',
+      state.targetPage?.createdAt ?? 0,
+    ].join('|');
 
   const makeTransportReconcileKey = (state: SyncState) =>
     [
@@ -192,6 +263,7 @@ export default defineBackground(() => {
       state.displayName,
       state.roomRole,
       state.targetPage?.normalizedUrl ?? 'none',
+      state.targetPage?.createdAt ?? 0,
     ].join('|');
 
   const makeMediaKey = (media: MediaSyncState) =>
@@ -225,7 +297,7 @@ export default defineBackground(() => {
 
     lastRoomTargetKey = targetKey;
     send({
-      type: 'room:update',
+      type: 'room:focus',
       roomCode: state.roomCode,
       clientId: state.clientId,
       targetPage: state.targetPage,
@@ -384,6 +456,29 @@ export default defineBackground(() => {
             },
             `Room page received: ${message.targetPage.hostname || message.targetPage.title}`,
             'success',
+          ),
+        );
+        break;
+      case 'room:focus':
+        await showFocusNotification(message.targetPage, message.roomCode);
+
+        await patchSyncState((state) =>
+          addActivity(
+            {
+              ...state,
+              targetPage: message.targetPage,
+              overlayVisible: true,
+              pendingFocusRequest:
+                state.roomRole === 'host'
+                  ? null
+                  : {
+                      id: `${message.roomCode}-${message.targetPage.createdAt}`,
+                      targetPage: message.targetPage,
+                      requestedAt: Date.now(),
+                    },
+            },
+            `Host focused: ${message.targetPage.hostname || message.targetPage.title}`,
+            'info',
           ),
         );
         break;
@@ -791,5 +886,19 @@ export default defineBackground(() => {
 
   browser.tabs.onRemoved.addListener((tabId) => {
     removeTabState(tabId).catch(console.error);
+  });
+
+  browser.notifications?.onButtonClicked?.addListener((notificationId, buttonIndex) => {
+    if (!notificationId.startsWith(`${FOCUS_NOTIFICATION_PREFIX}-`)) return;
+
+    openFocusTarget(buttonIndex === 1 ? 'new' : 'current').catch(console.error);
+    browser.notifications.clear(notificationId).catch(() => undefined);
+  });
+
+  browser.notifications?.onClicked?.addListener((notificationId) => {
+    if (!notificationId.startsWith(`${FOCUS_NOTIFICATION_PREFIX}-`)) return;
+
+    openFocusTarget('current').catch(console.error);
+    browser.notifications.clear(notificationId).catch(() => undefined);
   });
 });

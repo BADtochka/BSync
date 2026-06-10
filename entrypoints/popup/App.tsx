@@ -179,6 +179,7 @@ function App() {
         detachedReason: null,
         status: 'idle',
         targetPage,
+        pendingFocusRequest: null,
         progressPercent: 0,
         roomMedia: null,
         lastSyncedAt: null,
@@ -214,6 +215,7 @@ function App() {
         followHost: true,
         detachedReason: null,
         targetPage: null,
+        pendingFocusRequest: null,
         roomMedia: null,
         status: 'connecting',
         peerCount: 1,
@@ -237,6 +239,7 @@ function App() {
         detachedReason: null,
         roomCode: '000000',
         targetPage: null,
+        pendingFocusRequest: null,
         status: 'idle',
         progressPercent: 0,
         roomMedia: null,
@@ -265,6 +268,79 @@ function App() {
         detachedReason: null,
       }),
       'Following host playback',
+      'success',
+    );
+  };
+
+  const focusActiveTab = async () => {
+    const currentTabState = getActiveTabState();
+    if (!currentTabState?.url) {
+      await commit(
+        (current) => ({
+          ...current,
+          status: 'error',
+        }),
+        'Open a page before focusing the room',
+        'error',
+      );
+      return;
+    }
+
+    const targetPage = createRoomTargetPage(currentTabState);
+
+    await commit(
+      (current) => ({
+        ...current,
+        overlayVisible: true,
+        targetPage,
+        pendingFocusRequest: null,
+        progressPercent: 0,
+        roomMedia: null,
+        lastSyncedAt: null,
+      }),
+      `Focused room on ${targetPage.hostname || targetPage.title}`,
+      'success',
+    );
+  };
+
+  const openPendingFocus = async (mode: 'current' | 'new') => {
+    const focusRequest = state.pendingFocusRequest;
+    if (!focusRequest) return;
+
+    const { targetPage } = focusRequest;
+
+    if (mode === 'new') {
+      await browser.tabs.create({
+        url: targetPage.url,
+        active: true,
+      });
+    } else {
+      const [tab] = await browser.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+
+      if (tab?.id != null) {
+        await browser.tabs.update(tab.id, {
+          url: targetPage.url,
+          active: true,
+        });
+      } else {
+        await browser.tabs.create({
+          url: targetPage.url,
+          active: true,
+        });
+      }
+    }
+
+    await commit(
+      (current) => ({
+        ...current,
+        targetPage,
+        overlayVisible: true,
+        pendingFocusRequest: null,
+      }),
+      `Focused room page ${mode === 'new' ? 'in new tab' : 'in current tab'}`,
       'success',
     );
   };
@@ -319,6 +395,25 @@ function App() {
                   Follow host
                 </button>
               ) : null}
+            </div>
+          ) : null}
+          {roomRole === 'host' ? (
+            <button type="button" className="primary" onClick={focusActiveTab}>
+              Focus active tab
+            </button>
+          ) : null}
+          {roomRole !== 'host' && state.pendingFocusRequest ? (
+            <div className="focus-request">
+              <span>Host wants to switch page</span>
+              <strong>{getRoomTargetLabel(state.pendingFocusRequest.targetPage)}</strong>
+              <div className="button-row">
+                <button type="button" className="primary" onClick={() => openPendingFocus('current')}>
+                  В текущей
+                </button>
+                <button type="button" onClick={() => openPendingFocus('new')}>
+                  В новой
+                </button>
+              </div>
             </div>
           ) : null}
           <button type="button" className="danger" onClick={leaveRoom}>
