@@ -31,7 +31,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     env:
-      FIREFOX_EXTENSION_ID: ${{ secrets.FIREFOX_EXTENSION_ID }}
+      FIREFOX_EXTENSION_ID: ${{ vars.FIREFOX_EXTENSION_ID || secrets.FIREFOX_EXTENSION_ID }}
       FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_JWT_ISSUER }}
       FIREFOX_JWT_SECRET: ${{ secrets.FIREFOX_JWT_SECRET }}
       FIREFOX_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'listed' }}
@@ -47,6 +47,28 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Validate Firefox Add-ons config
+        shell: bash
+        run: |
+          missing=0
+
+          if [[ -z "${FIREFOX_EXTENSION_ID:-}" ]]; then
+            echo "FIREFOX_EXTENSION_ID is required. Add it as a repository variable or secret." >&2
+            missing=1
+          fi
+
+          if [[ -z "${FIREFOX_JWT_ISSUER:-}" ]]; then
+            echo "FIREFOX_JWT_ISSUER is required. Add it as a repository secret." >&2
+            missing=1
+          fi
+
+          if [[ -z "${FIREFOX_JWT_SECRET:-}" ]]; then
+            echo "FIREFOX_JWT_SECRET is required. Add it as a repository secret." >&2
+            missing=1
+          fi
+
+          exit "$missing"
 
       - name: Build Firefox extension zip
         run: bun run zip:firefox
@@ -65,6 +87,10 @@ jobs:
           args=(
             --firefox-zip "$firefox_zip"
             --firefox-sources-zip "$sources_zip"
+            --firefox-extension-id "$FIREFOX_EXTENSION_ID"
+            --firefox-jwt-issuer "$FIREFOX_JWT_ISSUER"
+            --firefox-jwt-secret "$FIREFOX_JWT_SECRET"
+            --firefox-channel "$FIREFOX_CHANNEL"
           )
 
           if [[ "$DRY_RUN" == "true" ]]; then
