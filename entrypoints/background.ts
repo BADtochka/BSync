@@ -70,7 +70,6 @@ const UNSTABLE_LATENCY_MS = 2500;
 const CONNECT_TIMEOUT_MS = 8000;
 const MEDIA_ACTIVITY_THROTTLE_MS = 5000;
 const MEDIA_APPLY_ACK_TIMEOUT_MS = 4000;
-const FOCUS_NOTIFICATION_PREFIX = 'bsync-focus';
 
 export default defineBackground(() => {
   let socket: WebSocket | null = null;
@@ -169,26 +168,6 @@ export default defineBackground(() => {
         'success',
       ),
     );
-  };
-
-  const showFocusNotification = async (targetPage: RoomTargetPage, roomCode: string) => {
-    const notificationsApi = browser.notifications;
-    if (!notificationsApi?.create) return;
-
-    await notificationsApi
-      .create(`${FOCUS_NOTIFICATION_PREFIX}-${roomCode}-${targetPage.createdAt}`, {
-        type: 'basic',
-        iconUrl: browser.runtime.getURL('/icon/128.png'),
-        title: 'BSync host switched page',
-        message: targetPage.hostname
-          ? `${targetPage.title} · ${targetPage.hostname}`
-          : targetPage.title,
-        buttons: [
-          { title: 'В текущей' },
-          { title: 'В новой' },
-        ],
-      })
-      .catch(() => undefined);
   };
 
   const openFocusTarget = async (mode: 'current' | 'new') => {
@@ -460,13 +439,10 @@ export default defineBackground(() => {
         );
         break;
       case 'room:focus':
-        await showFocusNotification(message.targetPage, message.roomCode);
-
         await patchSyncState((state) =>
           addActivity(
             {
               ...state,
-              targetPage: message.targetPage,
               overlayVisible: true,
               pendingFocusRequest:
                 state.roomRole === 'host'
@@ -907,19 +883,5 @@ export default defineBackground(() => {
 
   browser.tabs.onRemoved.addListener((tabId) => {
     removeTabState(tabId).catch(console.error);
-  });
-
-  browser.notifications?.onButtonClicked?.addListener((notificationId, buttonIndex) => {
-    if (!notificationId.startsWith(`${FOCUS_NOTIFICATION_PREFIX}-`)) return;
-
-    openFocusTarget(buttonIndex === 1 ? 'new' : 'current').catch(console.error);
-    browser.notifications.clear(notificationId).catch(() => undefined);
-  });
-
-  browser.notifications?.onClicked?.addListener((notificationId) => {
-    if (!notificationId.startsWith(`${FOCUS_NOTIFICATION_PREFIX}-`)) return;
-
-    openFocusTarget('current').catch(console.error);
-    browser.notifications.clear(notificationId).catch(() => undefined);
   });
 });

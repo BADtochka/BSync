@@ -401,7 +401,7 @@ function SyncOverlay() {
     !state ||
     !state.enabled ||
     !state.overlayVisible ||
-    !isRoomTargetUrl(state.targetPage, location.href)
+    (!state.pendingFocusRequest && !isRoomTargetUrl(state.targetPage, location.href))
   ) {
     return null;
   }
