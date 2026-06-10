@@ -504,11 +504,16 @@ export default defineBackground(() => {
     );
   };
 
-  const handleLocalMediaState = async (tabId: number, media: MediaSyncState) => {
+  const handleLocalMediaState = async (
+    tabId: number,
+    tabUrl: string | undefined,
+    media: MediaSyncState,
+  ) => {
     const latestState = await syncStateItem.getValue();
     activeState = latestState;
 
-    if (!latestState.targetPage || !isRoomTargetUrl(latestState.targetPage, media.url)) return;
+    const pageUrl = tabUrl || media.url;
+    if (!latestState.targetPage || !isRoomTargetUrl(latestState.targetPage, pageUrl)) return;
     if (latestState.roomRole !== 'host') return;
 
     const nextStatus = media.paused ? 'paused' : 'synced';
@@ -525,15 +530,20 @@ export default defineBackground(() => {
     }
   };
 
-  const detachFromHost = async (reason: string, media: MediaSyncState) => {
+  const detachFromHost = async (
+    reason: string,
+    tabUrl: string | undefined,
+    media: MediaSyncState,
+  ) => {
     const latestState = await syncStateItem.getValue();
     activeState = latestState;
 
+    const pageUrl = tabUrl || media.url;
     if (
       latestState.roomRole !== 'guest' ||
       !latestState.followHost ||
       !latestState.targetPage ||
-      !isRoomTargetUrl(latestState.targetPage, media.url)
+      !isRoomTargetUrl(latestState.targetPage, pageUrl)
     ) {
       return;
     }
@@ -740,12 +750,12 @@ export default defineBackground(() => {
     }
 
     if (message.type === 'bsync:media-state') {
-      handleLocalMediaState(sender.tab.id, message.payload).catch(console.error);
+      handleLocalMediaState(sender.tab.id, sender.tab.url, message.payload).catch(console.error);
       return;
     }
 
     if (message.type === 'bsync:media-detach') {
-      detachFromHost(message.payload.reason, message.payload.media).catch(console.error);
+      detachFromHost(message.payload.reason, sender.tab.url, message.payload.media).catch(console.error);
       return;
     }
 

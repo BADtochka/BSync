@@ -20,6 +20,10 @@ const USER_INTENT_WINDOW_MS = 2500;
 const DETACH_COOLDOWN_MS = 1200;
 const SEEK_DETACH_SECONDS = 0.75;
 
+function isTopFrame(): boolean {
+  return window.self === window.top;
+}
+
 function getPageSnapshot(): ContentPageSnapshot {
   return {
     title: document.title || location.hostname,
@@ -332,6 +336,8 @@ function SyncOverlay() {
   }, []);
 
   useEffect(() => {
+    if (!isTopFrame()) return;
+
     const publish = () => {
       const snapshot = getPageSnapshot();
       setPageSnapshot(snapshot);
@@ -390,6 +396,7 @@ function SyncOverlay() {
   }, [isDragging]);
 
   if (
+    !isTopFrame() ||
     !state ||
     !state.enabled ||
     !state.overlayVisible ||
@@ -530,6 +537,8 @@ function SyncOverlay() {
 
 export default defineContentScript({
   matches: ['<all_urls>'],
+  allFrames: true,
+  matchAboutBlank: true,
   cssInjectionMode: 'ui',
   runAt: 'document_idle',
   async main(ctx) {

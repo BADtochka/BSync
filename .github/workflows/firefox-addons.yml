@@ -31,7 +31,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     env:
-      FIREFOX_EXTENSION_ID: ${{ vars.FIREFOX_EXTENSION_ID || secrets.FIREFOX_EXTENSION_ID }}
+      WXT_FIREFOX_EXTENSION_ID: ${{ vars.WXT_FIREFOX_EXTENSION_ID || secrets.WXT_FIREFOX_EXTENSION_ID }}
       FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_JWT_ISSUER }}
       FIREFOX_JWT_SECRET: ${{ secrets.FIREFOX_JWT_SECRET }}
       FIREFOX_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'listed' }}
@@ -53,8 +53,8 @@ jobs:
         run: |
           missing=0
 
-          if [[ -z "${FIREFOX_EXTENSION_ID:-}" ]]; then
-            echo "FIREFOX_EXTENSION_ID is required. Add it as a repository variable or secret." >&2
+          if [[ -z "${WXT_FIREFOX_EXTENSION_ID:-}" ]]; then
+            echo "WXT_FIREFOX_EXTENSION_ID is required. Add it as a repository variable or secret." >&2
             missing=1
           fi
 
@@ -87,7 +87,7 @@ jobs:
           args=(
             --firefox-zip "$firefox_zip"
             --firefox-sources-zip "$sources_zip"
-            --firefox-extension-id "$FIREFOX_EXTENSION_ID"
+            --firefox-extension-id "$WXT_FIREFOX_EXTENSION_ID"
             --firefox-jwt-issuer "$FIREFOX_JWT_ISSUER"
             --firefox-jwt-secret "$FIREFOX_JWT_SECRET"
             --firefox-channel "$FIREFOX_CHANNEL"
