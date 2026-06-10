@@ -1,0 +1,74 @@
+name: Publish Firefox Add-on
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Firefox Add-ons channel
+        required: true
+        default: listed
+        type: choice
+        options:
+          - listed
+          - unlisted
+      dry_run:
+        description: Validate AMO credentials without uploading
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firefox-addons-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      FIREFOX_EXTENSION_ID: ${{ secrets.FIREFOX_EXTENSION_ID }}
+      FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_JWT_ISSUER }}
+      FIREFOX_JWT_SECRET: ${{ secrets.FIREFOX_JWT_SECRET }}
+      FIREFOX_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'listed' }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Firefox extension zip
+        run: bun run zip:firefox
+
+      - name: Publish to Firefox Add-ons
+        shell: bash
+        run: |
+          firefox_zip="$(find .output -maxdepth 1 -name '*-firefox.zip' -print -quit)"
+          sources_zip="$(find .output -maxdepth 1 -name '*-sources.zip' -print -quit)"
+
+          if [[ -z "$firefox_zip" || -z "$sources_zip" ]]; then
+            echo "Firefox extension zip or sources zip was not generated" >&2
+            exit 1
+          fi
+
+          args=(
+            --firefox-zip "$firefox_zip"
+            --firefox-sources-zip "$sources_zip"
+          )
+
+          if [[ "$DRY_RUN" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+
+          bunx wxt submit "${args[@]}"
