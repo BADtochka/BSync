@@ -188,6 +188,45 @@ body {
   justify-self: start;
 }
 
+.bsync-focus-request {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  color: #061d27;
+  background: #dcefff;
+  border: 1px solid rgba(98, 208, 238, 0.35);
+  border-radius: 6px;
+}
+
+.bsync-focus-request > div {
+  display: grid;
+  gap: 3px;
+}
+
+.bsync-focus-request strong {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.bsync-focus-request small {
+  overflow: hidden;
+  color: rgba(6, 29, 39, 0.72);
+  font-size: 11px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bsync-focus-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.bsync-focus-actions button {
+  min-width: 0;
+}
+
 .bsync-progress {
   height: 7px;
   overflow: hidden;

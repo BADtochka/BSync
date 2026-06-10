@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import {
   formatTimeAgo,
+  getRoomTargetLabel,
   getTabPageLabel,
   isRoomTargetUrl,
   statusLabel,
@@ -423,6 +424,26 @@ function SyncOverlay() {
     });
   };
 
+  const openPendingFocus = async (mode: 'current' | 'new') => {
+    const current = await syncStateItem.getValue();
+    const focusRequest = current.pendingFocusRequest;
+    if (!focusRequest) return;
+
+    const { targetPage } = focusRequest;
+
+    await browser.runtime.sendMessage({
+      type: 'bsync:focus-open',
+      payload: { mode, targetPage },
+    });
+
+    await syncStateItem.setValue({
+      ...current,
+      targetPage,
+      overlayVisible: true,
+      pendingFocusRequest: null,
+    });
+  };
+
   const mediaDriftLabel = getMediaDriftLabel(state.roomMedia, localMediaState);
 
   return (
@@ -469,6 +490,23 @@ function SyncOverlay() {
                 : 'Detached'}
           </small>
         </div>
+
+        {state.roomRole !== 'host' && state.pendingFocusRequest ? (
+          <div className="bsync-focus-request">
+            <div>
+              <strong>Host wants to switch page</strong>
+              <small>{getRoomTargetLabel(state.pendingFocusRequest.targetPage)}</small>
+            </div>
+            <div className="bsync-focus-actions">
+              <button type="button" className="is-primary" onClick={() => openPendingFocus('current')}>
+                В текущей
+              </button>
+              <button type="button" onClick={() => openPendingFocus('new')}>
+                В новой
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {state.roomRole === 'guest' && !state.followHost ? (
           <div className="bsync-detached">

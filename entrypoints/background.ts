@@ -881,6 +881,27 @@ export default defineBackground(() => {
         `media:apply-failed:${sender.tab.id}`,
         MEDIA_ACTIVITY_THROTTLE_MS,
       );
+      return;
+    }
+
+    if (message.type === 'bsync:focus-open') {
+      const { mode, targetPage } = message.payload;
+
+      if (mode === 'new') {
+        browser.tabs
+          .create({
+            url: targetPage.url,
+            active: true,
+          })
+          .catch(console.error);
+      } else if (sender.tab.id != null) {
+        browser.tabs
+          .update(sender.tab.id, {
+            url: targetPage.url,
+            active: true,
+          })
+          .catch(console.error);
+      }
     }
   });
 

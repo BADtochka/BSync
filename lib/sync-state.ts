@@ -110,6 +110,13 @@ export type BsyncRuntimeMessage =
         requested: MediaSyncState;
         reason: string;
       };
+    }
+  | {
+      type: 'bsync:focus-open';
+      payload: {
+        mode: 'current' | 'new';
+        targetPage: RoomTargetPage;
+      };
     };
 
 export type BsyncContentMessage = {
@@ -252,7 +259,8 @@ export function isBsyncRuntimeMessage(message: unknown): message is BsyncRuntime
     (candidate.type === 'bsync:media-state' && typeof candidate.payload?.currentTime === 'number') ||
     (candidate.type === 'bsync:media-detach' && typeof candidate.payload?.reason === 'string') ||
     (candidate.type === 'bsync:media-applied' && typeof candidate.payload?.driftSeconds === 'number') ||
-    (candidate.type === 'bsync:media-apply-failed' && typeof candidate.payload?.reason === 'string')
+    (candidate.type === 'bsync:media-apply-failed' && typeof candidate.payload?.reason === 'string') ||
+    (candidate.type === 'bsync:focus-open' && typeof candidate.payload?.targetPage?.url === 'string')
   );
 }
 
