@@ -85,6 +85,8 @@ export default defineBackground(() => {
   let lastRoomTargetKey = '';
   let lastMediaKey = '';
   let lastEnsuredTargetUrl = '';
+  let lastTransportReconcileKey = '';
+  let statePatchQueue: Promise<unknown> = Promise.resolve();
   const activityLogAt = new Map<string, number>();
   const pendingMediaApplyTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -104,10 +106,16 @@ export default defineBackground(() => {
   const patchSyncState = async (
     updater: (state: SyncState) => SyncState,
   ): Promise<SyncState> => {
-    const current = await syncStateItem.getValue();
-    const next = updater(current);
-    await syncStateItem.setValue(next);
-    return next;
+    const runPatch = async () => {
+      const current = await syncStateItem.getValue();
+      const next = updater(current);
+      await syncStateItem.setValue(next);
+      return next;
+    };
+
+    const patch = statePatchQueue.then(runPatch, runPatch);
+    statePatchQueue = patch.catch(() => undefined);
+    return patch;
   };
 
   const logActivity = (
@@ -173,6 +181,18 @@ export default defineBackground(() => {
 
   const makeRoomTargetKey = (state: SyncState) =>
     [state.roomCode, state.clientId, state.targetPage?.normalizedUrl ?? 'none'].join('|');
+
+  const makeTransportReconcileKey = (state: SyncState) =>
+    [
+      state.enabled,
+      state.transportEnabled,
+      state.serverUrl,
+      state.roomCode,
+      state.clientId,
+      state.displayName,
+      state.roomRole,
+      state.targetPage?.normalizedUrl ?? 'none',
+    ].join('|');
 
   const makeMediaKey = (media: MediaSyncState) =>
     [
@@ -284,6 +304,7 @@ export default defineBackground(() => {
     lastJoinKey = '';
     lastRoomTargetKey = '';
     lastMediaKey = '';
+    lastTransportReconcileKey = '';
   };
 
   const setTransportOffline = async () => {
@@ -662,9 +683,10 @@ export default defineBackground(() => {
   const reconcileTransport = (state: SyncState) => {
     const previousState = activeState;
     activeState = state;
+    const transportReconcileKey = makeTransportReconcileKey(state);
 
     if (!state.transportEnabled || !state.enabled) {
-      closeSocket();
+      if (socket) closeSocket();
       if (
         state.transportStatus !== 'offline' ||
         state.connectedAt !== null ||
@@ -672,11 +694,22 @@ export default defineBackground(() => {
       ) {
         setTransportOffline().catch(console.error);
       }
+      lastTransportReconcileKey = transportReconcileKey;
       return;
     }
 
-    connect(state);
-    publishCurrentState(state);
+    const shouldReconcileSocket =
+      transportReconcileKey !== lastTransportReconcileKey ||
+      !socket ||
+      socketUrl !== state.serverUrl ||
+      socket.readyState >= WebSocket.CLOSING;
+
+    if (shouldReconcileSocket) {
+      connect(state);
+      publishCurrentState(state);
+      lastTransportReconcileKey = transportReconcileKey;
+    }
+
     if (
       state.roomRole === 'guest' &&
       state.followHost &&
