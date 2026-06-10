@@ -1,5 +1,7 @@
 import { defineConfig } from 'wxt';
 
+const firefoxExtensionId = process.env.FIREFOX_EXTENSION_ID || process.env.WXT_FIREFOX_EXTENSION_ID;
+
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   manifest: ({ browser }) => ({
@@ -16,6 +18,7 @@ export default defineConfig({
       ? {
           browser_specific_settings: {
             gecko: {
+              id: firefoxExtensionId,
               data_collection_permissions: {
                 required: ['none' as const],
               },
