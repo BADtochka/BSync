@@ -1,0 +1,31 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">BSync logo</title>
+  <desc id="desc">Stylized BSync mark with a browser-sync B, overlay panels, and circular sync motion.</desc>
+  <defs>
+    <linearGradient id="bg" x1="78" y1="58" x2="431" y2="455" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1D4ED8"/>
+      <stop offset="0.52" stop-color="#7C3AED"/>
+      <stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="146" y1="120" x2="366" y2="396" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#CFFAFE"/>
+    </linearGradient>
+    <filter id="shadow" x="36" y="36" width="440" height="440" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#020617" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="#020617"/>
+  <rect x="40" y="40" width="432" height="432" rx="96" fill="url(#bg)" filter="url(#shadow)"/>
+  <path d="M150 164C150 142 168 124 190 124H279C330 124 360 153 360 194C360 222 345 244 321 255C351 265 370 290 370 323C370 365 338 396 285 396H190C168 396 150 378 150 356V164Z" fill="url(#mark)"/>
+  <path d="M217 197H275C294 197 306 208 306 225C306 242 294 253 275 253H217V197Z" fill="#1E1B4B"/>
+  <path d="M217 299H282C303 299 316 311 316 329C316 348 303 360 282 360H217V299Z" fill="#1E1B4B"/>
+  <path d="M126 254C126 225 138 198 157 179" stroke="#E0F2FE" stroke-width="18" stroke-linecap="round" opacity="0.92"/>
+  <path d="M386 258C386 287 374 314 355 333" stroke="#E0F2FE" stroke-width="18" stroke-linecap="round" opacity="0.92"/>
+  <path d="M159 147L157 179L125 177" stroke="#E0F2FE" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" opacity="0.92"/>
+  <path d="M353 365L355 333L387 335" stroke="#E0F2FE" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" opacity="0.92"/>
+  <rect x="108" y="107" width="98" height="70" rx="20" fill="#020617" fill-opacity="0.32" stroke="#BAE6FD" stroke-width="10"/>
+  <rect x="306" y="335" width="98" height="70" rx="20" fill="#020617" fill-opacity="0.32" stroke="#BAE6FD" stroke-width="10"/>
+  <circle cx="256" cy="256" r="18" fill="#67E8F9"/>
+  <circle cx="256" cy="256" r="42" stroke="#67E8F9" stroke-width="10" stroke-dasharray="22 18" opacity="0.82"/>
+</svg>
