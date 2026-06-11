@@ -1,5 +1,9 @@
 # BSync
 
+<p align="center">
+  <img src="assets/logo.svg" alt="BSync logo" width="160" height="160" />
+</p>
+
 Interactive browser sync overlay extension built with WXT and React.
 
 ## Features
