@@ -61,6 +61,20 @@
   letter-spacing: 0;
 }
 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brand-logo {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  border-radius: 8px;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;

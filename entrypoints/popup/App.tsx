@@ -14,6 +14,7 @@ import {
   type TabSyncState,
   type TransportStatus,
 } from '@/lib/sync-state';
+import logoUrl from '@/assets/logo.svg';
 import './App.css';
 
 const positions: Array<{ value: OverlayPosition; label: string }> = [
@@ -348,14 +349,17 @@ function App() {
   return (
     <main className="popup-shell">
       <section className="hero">
-        <div>
-          <span className={`status-pill status-pill--${state.status}`}>
-            {statusLabel(state.status)}
-          </span>
-          <span className={`transport-pill transport-pill--${state.transportStatus}`}>
-            {transportLabel(state.transportStatus)}
-          </span>
-          <h1>BSync</h1>
+        <div className="brand">
+          <img src={logoUrl} alt="" className="brand-logo" />
+          <div>
+            <span className={`status-pill status-pill--${state.status}`}>
+              {statusLabel(state.status)}
+            </span>
+            <span className={`transport-pill transport-pill--${state.transportStatus}`}>
+              {transportLabel(state.transportStatus)}
+            </span>
+            <h1>BSync</h1>
+          </div>
         </div>
         <button
           type="button"
