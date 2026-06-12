@@ -6,7 +6,7 @@ Effective date: 2026-06-12
 
 BSync is a browser extension for synchronizing page focus and media playback between users in a shared browser room.
 
-This Privacy Policy explains what data BSync processes, why it is processed, and how it is used.
+This Privacy Policy explains what data BSync collects or processes, how the data is used, and when the data may be shared.
 
 ## Single purpose
 
@@ -14,7 +14,7 @@ BSync's single purpose is to let users create or join a shared room and synchron
 
 The extension provides a browser popup and an on-page overlay for room status, connection status, media synchronization status, and follow/detach controls.
 
-## Data BSync processes
+## Data collected or processed by BSync
 
 BSync processes only the data required for its synchronization features.
 
@@ -93,7 +93,7 @@ BSync does not collect or process the following data:
 - Form inputs
 - Full page text content for unrelated purposes
 
-## How data is used
+## How BSync uses data
 
 BSync uses data only for the following purposes:
 
@@ -108,13 +108,26 @@ BSync uses data only for the following purposes:
 
 BSync does not use user data for advertising, profiling, creditworthiness, lending decisions, or unrelated analytics.
 
-## Data sharing
+## Data sharing and recipients
 
 BSync does not sell user data.
 
-BSync does not transfer user data to third parties except when required for the core synchronization feature. If the user enables room synchronization, synchronization messages are sent through the configured WebSocket server so other participants in the same room can receive page and media playback state.
+BSync does not transfer user data to advertising platforms, data brokers, information resellers, or unrelated third parties.
 
-Room participants may receive the selected page metadata and media playback state needed for synchronization.
+BSync may share synchronization data only with the following recipients when required for the core synchronization feature:
+
+- The configured WebSocket synchronization server
+- Other participants connected to the same synchronization room
+
+If the user enables room synchronization, synchronization messages are sent through the configured WebSocket server so other participants in the same room can receive the selected page metadata and media playback state needed for synchronization.
+
+## Limited Use disclosure
+
+BSync uses user data only to provide or improve its single purpose: browser page and media playback synchronization between participants in a shared room.
+
+The use of information received from Chrome extension APIs will adhere to the Chrome Web Store User Data Policy, including the Limited Use requirements.
+
+BSync does not use or transfer user data for personalized advertising, does not sell user data to third parties, and does not use or transfer user data to determine creditworthiness or for lending purposes.
 
 ## Remote code
 
@@ -122,11 +135,13 @@ BSync does not execute remote JavaScript, remote WebAssembly, or dynamically dow
 
 All extension logic is bundled with the extension package. WebSocket messages are treated as synchronization data and are not executed as code. BSync does not use `eval`, `Function`, remote script injection, or dynamic imports from remote URLs.
 
-## Data storage
+## Data storage and security
 
 BSync stores extension state and settings locally in the browser using browser extension storage.
 
-Data sent through the configured WebSocket server is used for active room synchronization. Retention of relay data depends on the configured synchronization server. BSync is designed to use synchronization messages as transient room state rather than permanent user records.
+Data sent through the configured WebSocket server is used for active room synchronization. BSync is designed to use synchronization messages as transient room state rather than permanent user records.
+
+When synchronization is configured to use a remote server, BSync should use secure WebSocket transport (`wss://`) where supported. Local development may use `ws://localhost`.
 
 ## User control
 
