@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'preact/hooks';
 import {
   addActivity,
   createRoomTargetPage,
@@ -331,7 +332,7 @@ function App() {
               onChange={(event) =>
                 commit((current) => ({
                   ...current,
-                  displayName: event.target.value,
+                  displayName: event.currentTarget.value,
                 }))
               }
             />
@@ -344,7 +345,7 @@ function App() {
               onChange={(event) =>
                 commit((current) => ({
                   ...current,
-                  serverUrl: event.target.value.trim(),
+                  serverUrl: event.currentTarget.value.trim(),
                 }))
               }
             />
@@ -368,7 +369,9 @@ function App() {
                 maxLength={6}
                 placeholder="6 digit code"
                 value={joinCode}
-                onChange={(event) => setJoinCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                onChange={(event) =>
+                  setJoinCode(event.currentTarget.value.replace(/\D/g, '').slice(0, 6))
+                }
               />
             </label>
             <button type="button" onClick={joinRoom}>
