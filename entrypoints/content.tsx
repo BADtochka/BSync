@@ -1,5 +1,5 @@
-import React from 'react';
-import ReactDOM from 'react-dom/client';
+import { render } from 'preact';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   formatTimeAgo,
   getRoomTargetLabel,
@@ -587,16 +587,11 @@ export default defineContentScript({
       zIndex: 2147483647,
       isolateEvents: true,
       onMount(container) {
-        const root = ReactDOM.createRoot(container);
-        root.render(
-          <React.StrictMode>
-            <SyncOverlay />
-          </React.StrictMode>,
-        );
-        return root;
+        render(<SyncOverlay />, container);
+        return container;
       },
-      onRemove(root) {
-        root?.unmount();
+      onRemove(container) {
+        if (container) render(null, container);
       },
     });
 

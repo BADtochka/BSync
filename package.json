@@ -1,8 +1,8 @@
 {
   "name": "bsync",
-  "description": "Interactive browser sync overlay extension built with WXT and React.",
+  "description": "Interactive browser sync overlay extension built with WXT and Preact.",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "scripts": {
     "dev": "wxt",
@@ -16,14 +16,11 @@
     "postinstall": "wxt prepare"
   },
   "dependencies": {
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "preact": "^10.29.2"
   },
   "devDependencies": {
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
-    "@wxt-dev/module-react": "^1.2.2",
-    "typescript": "^6.0.3",
-    "wxt": "^0.20.26"
+    "@preact/preset-vite": "^2.10.5",
+    "typescript": "^5.9.3",
+    "wxt": "^0.20.25"
   }
 }
