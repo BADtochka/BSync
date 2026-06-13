@@ -1,4 +1,6 @@
-const port = Number(process.env.BSYNC_PORT || 8787);
+const wsServer = new URL(process.env.WXT_WS_SERVER || 'ws://localhost:8787');
+console.log(wsServer);
+const port = Number(wsServer.port);
 const rooms = new Map();
 
 function getRoom(roomCode) {
@@ -63,6 +65,19 @@ function leaveRoom(ws) {
   }
 
   broadcastPresence(roomCode);
+}
+
+function getCurrentMediaState(media) {
+  if (!media || media.paused) return media;
+
+  const elapsedSeconds = Math.max(0, (Date.now() - media.updatedAt) / 1000);
+  const currentTime = media.currentTime + elapsedSeconds * (media.playbackRate || 1);
+
+  return {
+    ...media,
+    currentTime: media.duration ? Math.min(currentTime, media.duration) : currentTime,
+    updatedAt: Date.now(),
+  };
 }
 
 Bun.serve({
@@ -135,11 +150,13 @@ Bun.serve({
         });
 
         if (room.lastMedia && room.hostClientId !== clientId) {
+          const currentMedia = getCurrentMediaState(room.lastMedia);
+          room.lastMedia = currentMedia;
           send(ws, {
             type: 'media:update',
             roomCode,
             clientId: room.hostClientId,
-            media: room.lastMedia,
+            media: currentMedia,
           });
         }
 
@@ -194,6 +211,30 @@ Bun.serve({
         return;
       }
 
+      if (message.type === 'room:focus' && message.targetPage) {
+        const room = getRoom(roomCode);
+        if (room.hostClientId !== clientId) {
+          send(ws, {
+            type: 'error',
+            message: 'Only the host can focus the room page',
+          });
+          return;
+        }
+
+        room.targetPage = message.targetPage;
+        broadcast(
+          roomCode,
+          {
+            type: 'room:focus',
+            roomCode,
+            clientId,
+            targetPage: message.targetPage,
+          },
+          clientId,
+        );
+        return;
+      }
+
       if (message.type === 'media:update' && message.media) {
         const room = getRoom(roomCode);
         if (room.hostClientId !== clientId) {
@@ -204,14 +245,17 @@ Bun.serve({
           return;
         }
 
-        room.lastMedia = message.media;
+        room.lastMedia = {
+          ...message.media,
+          updatedAt: Date.now(),
+        };
         broadcast(
           roomCode,
           {
             type: 'media:update',
             roomCode,
             clientId,
-            media: message.media,
+            media: room.lastMedia,
           },
           clientId,
         );
@@ -221,11 +265,13 @@ Bun.serve({
       if (message.type === 'media:request') {
         const room = getRoom(roomCode);
         if (room.lastMedia && room.hostClientId) {
+          const currentMedia = getCurrentMediaState(room.lastMedia);
+          room.lastMedia = currentMedia;
           send(ws, {
             type: 'media:update',
             roomCode,
             clientId: room.hostClientId,
-            media: room.lastMedia,
+            media: currentMedia,
           });
         }
         return;

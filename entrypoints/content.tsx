@@ -2,6 +2,7 @@ import { render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   formatTimeAgo,
+  getRoomTargetLabel,
   getTabPageLabel,
   isRoomTargetUrl,
   statusLabel,
@@ -19,6 +20,10 @@ const MEDIA_CONTROL_EVENTS = ['play', 'pause', 'seeking', 'seeked', 'ratechange'
 const USER_INTENT_WINDOW_MS = 2500;
 const DETACH_COOLDOWN_MS = 1200;
 const SEEK_DETACH_SECONDS = 0.75;
+
+function isTopFrame(): boolean {
+  return window.self === window.top;
+}
 
 function getPageSnapshot(): ContentPageSnapshot {
   return {
@@ -59,6 +64,26 @@ function getMediaState(media: HTMLMediaElement): MediaSyncState {
   };
 }
 
+function getMediaDisplayLabel(media: MediaSyncState): string {
+  return `${media.paused ? 'Paused' : 'Playing'} · ${Math.round(media.currentTime)}s${
+    media.duration ? ` / ${Math.round(media.duration)}s` : ''
+  }`;
+}
+
+function getMediaDriftLabel(hostMedia: MediaSyncState | null, localMedia: MediaSyncState | null): string | null {
+  if (!hostMedia || !localMedia) return null;
+
+  const driftSeconds = Math.round(Math.abs(localMedia.currentTime - hostMedia.currentTime));
+  if (driftSeconds < 1 && localMedia.paused === hostMedia.paused) return 'in sync';
+
+  const playbackState = localMedia.paused === hostMedia.paused ? '' : ' · state differs';
+  return `${driftSeconds}s drift${playbackState}`;
+}
+
+function getMediaDriftSeconds(left: MediaSyncState, right: MediaSyncState): number {
+  return Math.round(Math.abs(left.currentTime - right.currentTime) * 10) / 10;
+}
+
 async function applyMediaState(media: HTMLMediaElement, remoteState: MediaSyncState) {
   if (Number.isFinite(remoteState.playbackRate) && media.playbackRate !== remoteState.playbackRate) {
     media.playbackRate = remoteState.playbackRate;
@@ -81,7 +106,7 @@ async function applyMediaState(media: HTMLMediaElement, remoteState: MediaSyncSt
 function SyncOverlay() {
   const [state, setState] = useState<SyncState | null>(null);
   const [pageSnapshot, setPageSnapshot] = useState<ContentPageSnapshot>(() => getPageSnapshot());
-  const [mediaState, setMediaState] = useState<MediaSyncState | null>(null);
+  const [localMediaState, setLocalMediaState] = useState<MediaSyncState | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -118,12 +143,12 @@ function SyncOverlay() {
     const publishMediaState = () => {
       const media = getPrimaryMediaElement();
       if (!media) {
-        setMediaState(null);
+        setLocalMediaState(null);
         return;
       }
 
       const nextMediaState = getMediaState(media);
-      setMediaState(nextMediaState);
+      setLocalMediaState(nextMediaState);
 
       const latestState = stateRef.current;
       if (latestState?.roomRole !== 'host') return;
@@ -175,12 +200,14 @@ function SyncOverlay() {
       const isRemoteApply = now < suppressMediaPublishUntilRef.current;
       const isSeekEvent = eventName === 'seeking' || eventName === 'seeked';
 
-      if (!hasUserIntent && (!isSeekEvent || isRemoteApply)) return;
+      if (isRemoteApply) return;
+      if (!hasUserIntent && !isSeekEvent) return;
       sendDetachFromHost(`Local ${eventName}`);
     };
 
     const checkUserDrivenTimeShift = () => {
       if (Date.now() > userIntentUntilRef.current) return;
+      if (Date.now() < suppressMediaPublishUntilRef.current) return;
 
       const initialTime = userIntentMediaTimeRef.current;
       if (initialTime == null) return;
@@ -245,12 +272,45 @@ function SyncOverlay() {
       if (candidate?.type !== 'bsync:media-apply') return;
 
       const media = getPrimaryMediaElement();
-      if (!media) return;
+      if (!media) {
+        browser.runtime
+          .sendMessage({
+            type: 'bsync:media-apply-failed',
+            payload: {
+              requested: candidate.payload,
+              reason: 'No media element on page',
+            },
+          })
+          .catch(() => undefined);
+        return;
+      }
 
+      const before = getMediaState(media);
       suppressMediaPublishUntilRef.current = Date.now() + 1200;
       applyMediaState(media, candidate.payload)
-        .then(() => setMediaState(getMediaState(media)))
-        .catch(console.error);
+        .then(() => {
+          const after = getMediaState(media);
+          return browser.runtime.sendMessage({
+            type: 'bsync:media-applied',
+            payload: {
+              requested: candidate.payload,
+              before,
+              after,
+              driftSeconds: getMediaDriftSeconds(candidate.payload, after),
+            },
+          });
+        })
+        .catch((error) => {
+          browser.runtime
+            .sendMessage({
+              type: 'bsync:media-apply-failed',
+              payload: {
+                requested: candidate.payload,
+                reason: error instanceof Error ? error.message : 'Media apply failed',
+              },
+            })
+            .catch(() => undefined);
+        });
     };
 
     browser.runtime.onMessage.addListener(messageListener);
@@ -277,6 +337,8 @@ function SyncOverlay() {
   }, []);
 
   useEffect(() => {
+    if (!isTopFrame()) return;
+
     const publish = () => {
       const snapshot = getPageSnapshot();
       setPageSnapshot(snapshot);
@@ -335,10 +397,11 @@ function SyncOverlay() {
   }, [isDragging]);
 
   if (
+    !isTopFrame() ||
     !state ||
     !state.enabled ||
     !state.overlayVisible ||
-    !isRoomTargetUrl(state.targetPage, location.href)
+    (!state.pendingFocusRequest && !isRoomTargetUrl(state.targetPage, location.href))
   ) {
     return null;
   }
@@ -353,12 +416,35 @@ function SyncOverlay() {
   };
 
   const handleFollowHost = async () => {
+    const current = await syncStateItem.getValue();
     await syncStateItem.setValue({
-      ...state,
+      ...current,
       followHost: true,
       detachedReason: null,
     });
   };
+
+  const openPendingFocus = async (mode: 'current' | 'new') => {
+    const current = await syncStateItem.getValue();
+    const focusRequest = current.pendingFocusRequest;
+    if (!focusRequest) return;
+
+    const { targetPage } = focusRequest;
+
+    await browser.runtime.sendMessage({
+      type: 'bsync:focus-open',
+      payload: { mode, targetPage },
+    });
+
+    await syncStateItem.setValue({
+      ...current,
+      targetPage,
+      overlayVisible: true,
+      pendingFocusRequest: null,
+    });
+  };
+
+  const mediaDriftLabel = getMediaDriftLabel(state.roomMedia, localMediaState);
 
   return (
     <div
@@ -405,6 +491,23 @@ function SyncOverlay() {
           </small>
         </div>
 
+        {state.roomRole !== 'host' && state.pendingFocusRequest ? (
+          <div className="bsync-focus-request">
+            <div>
+              <strong>Host wants to switch page</strong>
+              <small>{getRoomTargetLabel(state.pendingFocusRequest.targetPage)}</small>
+            </div>
+            <div className="bsync-focus-actions">
+              <button type="button" className="is-primary" onClick={() => openPendingFocus('current')}>
+                В текущей
+              </button>
+              <button type="button" onClick={() => openPendingFocus('new')}>
+                В новой
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {state.roomRole === 'guest' && !state.followHost ? (
           <div className="bsync-detached">
             <div>
@@ -445,12 +548,20 @@ function SyncOverlay() {
         </p>
 
         <p className="bsync-page">
-          {mediaState
-            ? `${mediaState.paused ? 'Paused' : 'Playing'} · ${Math.round(
-                mediaState.currentTime,
-              )}s${mediaState.duration ? ` / ${Math.round(mediaState.duration)}s` : ''}`
-            : 'No media found'}
+          {state.roomMedia
+            ? `Host: ${getMediaDisplayLabel(state.roomMedia)}`
+            : 'No room media found'}
         </p>
+
+        {state.roomRole === 'guest' ? (
+          <p className="bsync-page">
+            {localMediaState
+              ? `Local: ${getMediaDisplayLabel(localMediaState)}${
+                  mediaDriftLabel ? ` · ${mediaDriftLabel}` : ''
+                }`
+              : 'Local: no media found'}
+          </p>
+        ) : null}
 
         <div className="bsync-actions">
           <button type="button" onClick={handleHide}>
@@ -464,6 +575,8 @@ function SyncOverlay() {
 
 export default defineContentScript({
   matches: ['<all_urls>'],
+  allFrames: true,
+  matchAboutBlank: true,
   cssInjectionMode: 'ui',
   runAt: 'document_idle',
   async main(ctx) {

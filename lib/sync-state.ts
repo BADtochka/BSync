@@ -29,11 +29,13 @@ export interface SyncState {
   peerCount: number;
   latencyMs: number;
   progressPercent: number;
+  roomMedia: MediaSyncState | null;
   position: OverlayPosition;
   lastSyncedAt: number | null;
   connectedAt: number | null;
   lastTransportError: string | null;
   targetPage: RoomTargetPage | null;
+  pendingFocusRequest: RoomFocusRequest | null;
   activity: SyncActivity[];
 }
 
@@ -57,6 +59,12 @@ export interface RoomTargetPage {
   createdAt: number;
 }
 
+export interface RoomFocusRequest {
+  id: string;
+  targetPage: RoomTargetPage;
+  requestedAt: number;
+}
+
 export interface TabSyncState {
   tabId: number;
   title: string;
@@ -71,19 +79,45 @@ export type TabSyncStateMap = Record<string, TabSyncState>;
 
 export type ContentPageSnapshot = Omit<TabSyncState, 'tabId' | 'updatedAt'>;
 
-export type BsyncRuntimeMessage = {
-  type: 'bsync:tab-page';
-  payload: ContentPageSnapshot;
-} | {
-  type: 'bsync:media-state';
-  payload: MediaSyncState;
-} | {
-  type: 'bsync:media-detach';
-  payload: {
-    reason: string;
-    media: MediaSyncState;
-  };
-};
+export type BsyncRuntimeMessage =
+  | {
+      type: 'bsync:tab-page';
+      payload: ContentPageSnapshot;
+    }
+  | {
+      type: 'bsync:media-state';
+      payload: MediaSyncState;
+    }
+  | {
+      type: 'bsync:media-detach';
+      payload: {
+        reason: string;
+        media: MediaSyncState;
+      };
+    }
+  | {
+      type: 'bsync:media-applied';
+      payload: {
+        requested: MediaSyncState;
+        before: MediaSyncState;
+        after: MediaSyncState;
+        driftSeconds: number;
+      };
+    }
+  | {
+      type: 'bsync:media-apply-failed';
+      payload: {
+        requested: MediaSyncState;
+        reason: string;
+      };
+    }
+  | {
+      type: 'bsync:focus-open';
+      payload: {
+        mode: 'current' | 'new';
+        targetPage: RoomTargetPage;
+      };
+    };
 
 export type BsyncContentMessage = {
   type: 'bsync:media-apply';
@@ -102,6 +136,13 @@ export type BsyncWsClientMessage =
     }
   | {
       type: 'room:update';
+      roomCode: string;
+      clientId: string;
+      targetPage: RoomTargetPage;
+      sentAt: number;
+    }
+  | {
+      type: 'room:focus';
       roomCode: string;
       clientId: string;
       targetPage: RoomTargetPage;
@@ -149,6 +190,13 @@ export type BsyncWsServerMessage =
       sentAt: number;
     }
   | {
+      type: 'room:focus';
+      roomCode: string;
+      clientId: string;
+      targetPage: RoomTargetPage;
+      sentAt: number;
+    }
+  | {
       type: 'media:update';
       roomCode: string;
       clientId: string;
@@ -174,7 +222,7 @@ export const DEFAULT_SYNC_STATE: SyncState = {
   status: 'idle',
   transportEnabled: false,
   transportStatus: 'offline',
-  serverUrl: 'ws://localhost:8787',
+  serverUrl: import.meta.env.WXT_WS_SERVER,
   clientId: `client-${Math.random().toString(36).slice(2, 10)}`,
   roomCode: '000000',
   roomRole: 'none',
@@ -184,11 +232,13 @@ export const DEFAULT_SYNC_STATE: SyncState = {
   peerCount: 1,
   latencyMs: 0,
   progressPercent: 0,
+  roomMedia: null,
   position: 'top-right',
   lastSyncedAt: null,
   connectedAt: null,
   lastTransportError: null,
   targetPage: null,
+  pendingFocusRequest: null,
   activity: [],
 };
 
@@ -207,7 +257,10 @@ export function isBsyncRuntimeMessage(message: unknown): message is BsyncRuntime
   return (
     (candidate.type === 'bsync:tab-page' && typeof candidate.payload?.url === 'string') ||
     (candidate.type === 'bsync:media-state' && typeof candidate.payload?.currentTime === 'number') ||
-    (candidate.type === 'bsync:media-detach' && typeof candidate.payload?.reason === 'string')
+    (candidate.type === 'bsync:media-detach' && typeof candidate.payload?.reason === 'string') ||
+    (candidate.type === 'bsync:media-applied' && typeof candidate.payload?.driftSeconds === 'number') ||
+    (candidate.type === 'bsync:media-apply-failed' && typeof candidate.payload?.reason === 'string') ||
+    (candidate.type === 'bsync:focus-open' && typeof candidate.payload?.targetPage?.url === 'string')
   );
 }
 
@@ -264,11 +317,7 @@ export function generateRoomCode(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-export function addActivity(
-  state: SyncState,
-  label: string,
-  tone: SyncActivity['tone'] = 'info',
-): SyncState {
+export function addActivity(state: SyncState, label: string, tone: SyncActivity['tone'] = 'info'): SyncState {
   return {
     ...state,
     activity: [
@@ -279,13 +328,11 @@ export function addActivity(
         tone,
       },
       ...state.activity,
-    ].slice(0, 5),
+    ].slice(0, 20),
   };
 }
 
-export async function updateSyncState(
-  updater: (state: SyncState) => SyncState,
-): Promise<SyncState> {
+export async function updateSyncState(updater: (state: SyncState) => SyncState): Promise<SyncState> {
   const current = await syncStateItem.getValue();
   const next = updater(current);
   await syncStateItem.setValue(next);

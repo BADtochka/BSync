@@ -1,6 +1,8 @@
 import preact from "@preact/preset-vite";
 import { defineConfig } from "wxt";
 
+const firefoxExtensionId = process.env.FIREFOX_EXTENSION_ID || process.env.WXT_FIREFOX_EXTENSION_ID;
+
 export default defineConfig({
   vite: () => ({
     plugins: [preact()],
@@ -13,13 +15,13 @@ export default defineConfig({
       default_title: "BSync",
     },
     content_security_policy: {
-      extension_pages:
-        "script-src 'self'; object-src 'self'; connect-src 'self' ws://localhost:* wss://*;",
+      extension_pages: "script-src 'self'; object-src 'self'; connect-src 'self' ws://localhost:* wss://*;",
     },
     ...(browser === "firefox"
       ? {
           browser_specific_settings: {
             gecko: {
+              id: firefoxExtensionId,
               data_collection_permissions: {
                 required: ["none" as const],
               },

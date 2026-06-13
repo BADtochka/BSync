@@ -1,0 +1,18 @@
+services:
+  sync-server:
+    image: ${SYNC_SERVER_IMAGE:-ghcr.io/badtochka/bsync-sync-server:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.sync-server
+    container_name: bsync-sync-server
+    restart: unless-stopped
+    environment:
+      WXT_WS_SERVER: ${WXT_WS_SERVER:-ws://0.0.0.0:8787}
+    expose:
+      - "8787"
+    networks:
+      - caddy
+
+networks:
+  caddy:
+    external: true

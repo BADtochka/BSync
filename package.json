@@ -2,7 +2,7 @@
   "name": "bsync",
   "description": "Interactive browser sync overlay extension built with WXT and Preact.",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.2",
   "type": "module",
   "scripts": {
     "dev": "wxt",
