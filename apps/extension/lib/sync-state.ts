@@ -219,6 +219,26 @@ export function clearRoomSession(state: SyncState): SyncState {
   };
 }
 
+export function createDefaultSyncState(): SyncState {
+  return {
+    ...DEFAULT_SYNC_PREFERENCES,
+    clientId: `client-${Math.random().toString(36).slice(2, 10)}`,
+    ...DEFAULT_ROOM_SESSION,
+    activity: [],
+  };
+}
+
+export async function resetExtensionData(): Promise<SyncState> {
+  await browser.storage.local.clear();
+  await browser.storage.session?.clear?.();
+
+  const nextState = createDefaultSyncState();
+  await syncStateItem.setValue(nextState);
+  await tabStateItem.setValue({});
+
+  return nextState;
+}
+
 function mergeSyncState(preferences: SyncPreferences, room: RoomSessionState): SyncState {
   return {
     ...DEFAULT_SYNC_PREFERENCES,

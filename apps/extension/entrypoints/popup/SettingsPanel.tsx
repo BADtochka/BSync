@@ -21,13 +21,16 @@ type SettingsPanelProps = {
     label?: string,
     tone?: 'info' | 'success' | 'warning' | 'error',
   ) => void;
+  onResetData: () => Promise<void>;
 };
 
-export function SettingsPanel({ state, onBack, onCommit }: SettingsPanelProps) {
+export function SettingsPanel({ state, onBack, onCommit, onResetData }: SettingsPanelProps) {
   const [newDomain, setNewDomain] = useState('');
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editingValue, setEditingValue] = useState('');
   const [domainError, setDomainError] = useState<string | null>(null);
+  const [isResetConfirming, setIsResetConfirming] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
 
   const domains = state.trustedDomains ?? [];
 
@@ -91,6 +94,19 @@ export function SettingsPanel({ state, onBack, onCommit }: SettingsPanelProps) {
       cancelEdit();
     } else if (editingIndex != null && editingIndex > index) {
       setEditingIndex(editingIndex - 1);
+    }
+  };
+
+  const confirmResetData = async () => {
+    setIsResetting(true);
+    try {
+      await onResetData();
+      setIsResetConfirming(false);
+      setDomainError(null);
+      setNewDomain('');
+      cancelEdit();
+    } finally {
+      setIsResetting(false);
     }
   };
 
@@ -240,6 +256,40 @@ export function SettingsPanel({ state, onBack, onCommit }: SettingsPanelProps) {
           </div>
 
           {domainError ? <p className='field-error'>{domainError}</p> : null}
+        </div>
+      </div>
+
+      <div className='settings-group danger-zone'>
+        <div className='settings-field'>
+          <span>Extension data</span>
+          <small>Clears room state, trusted domains, activity, and tracked tab snapshots.</small>
+
+          {isResetConfirming ? (
+            <div className='reset-confirmation'>
+              <span>Reset all saved extension data?</span>
+              <div className='reset-actions'>
+                <button
+                  type='button'
+                  className='danger'
+                  disabled={isResetting}
+                  onClick={confirmResetData}
+                >
+                  {isResetting ? 'Resetting' : 'Confirm reset'}
+                </button>
+                <button
+                  type='button'
+                  disabled={isResetting}
+                  onClick={() => setIsResetConfirming(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button type='button' className='danger' onClick={() => setIsResetConfirming(true)}>
+              Reset all data
+            </button>
+          )}
         </div>
       </div>
 

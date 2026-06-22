@@ -10,6 +10,7 @@ import {
     getTabPageLabel,
     normalizeRoomCode,
     openRoomTargetPage,
+    resetExtensionData,
     resolveFocusRequestSource,
     resolveInRoomSyncStatus,
     statusLabel,
@@ -164,6 +165,14 @@ function App() {
     if (!state) return;
     const next = updater(state);
     await syncStateItem.setValue(label ? addActivity(next, label, tone) : next);
+  };
+
+  const resetAllExtensionData = async () => {
+    const nextState = await resetExtensionData();
+    setState(nextState);
+    setTabStates({});
+    setJoinCode('');
+    setTrustFocusSite(false);
   };
 
   const getActiveTabState = () => {
@@ -397,6 +406,7 @@ function App() {
           state={state!}
           onBack={() => setPopupView('main')}
           onCommit={commit}
+          onResetData={resetAllExtensionData}
         />
       </main>
     );
