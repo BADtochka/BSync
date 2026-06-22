@@ -5,7 +5,10 @@ on:
     branches:
       - main
     paths:
-      - scripts/sync-server.js
+      - apps/sync-server/**
+      - packages/sync-protocol/**
+      - package.json
+      - bun.lock
       - Dockerfile.sync-server
       - .github/workflows/sync-server-image.yml
   workflow_dispatch:

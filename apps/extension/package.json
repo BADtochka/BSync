@@ -1,0 +1,27 @@
+{
+  "name": "@bsync/extension",
+  "description": "Interactive browser sync overlay extension built with WXT and Preact.",
+  "private": true,
+  "version": "0.0.3",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox --mv3",
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox --mv3",
+    "zip": "wxt zip",
+    "zip:firefox": "wxt zip -b firefox --mv3",
+    "compile": "tsc --noEmit",
+    "postinstall": "wxt prepare"
+  },
+  "dependencies": {
+    "@bsync/sync-protocol": "workspace:*",
+    "preact": "^10.29.2"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.5",
+    "@wxt-dev/auto-icons": "^1.1.1",
+    "typescript": "^5.9.3",
+    "wxt": "^0.20.25"
+  }
+}

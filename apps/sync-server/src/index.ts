@@ -1,9 +1,38 @@
-const wsServer = new URL(process.env.WXT_WS_SERVER || 'ws://localhost:8787');
-console.log(wsServer);
-const port = Number(wsServer.port);
-const rooms = new Map();
+import type { BsyncWsServerMessage, MediaSyncState, RoomTargetPage } from '@bsync/sync-protocol';
 
-function getRoom(roomCode) {
+type ServerWebSocketData = {
+  clientId: string | null;
+  roomCode: string | null;
+  displayName: string | null;
+};
+
+type ServerWebSocket = Bun.ServerWebSocket<ServerWebSocketData>;
+
+type Room = {
+  targetPage: RoomTargetPage | null;
+  hostClientId: string | null;
+  lastMedia: MediaSyncState | null;
+  clients: Map<string, ServerWebSocket>;
+};
+
+type IncomingMessage = {
+  type?: string;
+  roomCode?: string;
+  clientId?: string;
+  roomRole?: string;
+  displayName?: string;
+  targetPage?: RoomTargetPage | null;
+  media?: MediaSyncState;
+  sentAt?: number;
+};
+
+type ServerMessage = BsyncWsServerMessage | ({ type: string; sentAt?: number } & Record<string, unknown>);
+
+const wsServer = new URL(process.env.WS_SERVER_URL || process.env.WXT_WS_SERVER || 'ws://localhost:8787');
+const port = Number(process.env.PORT || wsServer.port || 8787);
+const rooms = new Map<string, Room>();
+
+function getRoom(roomCode: string | null | undefined): Room {
   const key = roomCode || '000000';
   let room = rooms.get(key);
 
@@ -20,16 +49,16 @@ function getRoom(roomCode) {
   return room;
 }
 
-function findRoom(roomCode) {
+function findRoom(roomCode: string | null | undefined): Room | null {
   return rooms.get(roomCode || '000000') ?? null;
 }
 
-function send(ws, message) {
+function send(ws: ServerWebSocket, message: ServerMessage) {
   if (ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ ...message, sentAt: message.sentAt ?? Date.now() }));
 }
 
-function broadcast(roomCode, message, exceptClientId) {
+function broadcast(roomCode: string, message: ServerMessage, exceptClientId?: string) {
   const room = rooms.get(roomCode);
   if (!room) return;
 
@@ -39,7 +68,7 @@ function broadcast(roomCode, message, exceptClientId) {
   }
 }
 
-function broadcastPresence(roomCode) {
+function broadcastPresence(roomCode: string) {
   const room = rooms.get(roomCode);
   if (!room) return;
 
@@ -50,7 +79,7 @@ function broadcastPresence(roomCode) {
   });
 }
 
-function leaveRoom(ws) {
+function leaveRoom(ws: ServerWebSocket) {
   const { roomCode, clientId } = ws.data;
   if (!roomCode || !clientId) return;
 
@@ -67,7 +96,7 @@ function leaveRoom(ws) {
   broadcastPresence(roomCode);
 }
 
-function getCurrentMediaState(media) {
+function getCurrentMediaState(media: MediaSyncState | null): MediaSyncState | null {
   if (!media || media.paused) return media;
 
   const elapsedSeconds = Math.max(0, (Date.now() - media.updatedAt) / 1000);
@@ -80,7 +109,7 @@ function getCurrentMediaState(media) {
   };
 }
 
-Bun.serve({
+Bun.serve<ServerWebSocketData>({
   port,
   fetch(request, server) {
     if (
@@ -103,9 +132,9 @@ Bun.serve({
   },
   websocket: {
     message(ws, rawMessage) {
-      let message;
+      let message: IncomingMessage;
       try {
-        message = JSON.parse(String(rawMessage));
+        message = JSON.parse(String(rawMessage)) as IncomingMessage;
       } catch {
         send(ws, {
           type: 'error',

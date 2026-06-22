@@ -7,7 +7,8 @@ services:
     container_name: bsync-sync-server
     restart: unless-stopped
     environment:
-      WXT_WS_SERVER: ${WXT_WS_SERVER:-ws://0.0.0.0:8787}
+      WS_SERVER_URL: ${WS_SERVER_URL:-ws://0.0.0.0:8787}
+      WXT_WS_SERVER: ${WXT_WS_SERVER:-}
     expose:
       - "8787"
     networks:

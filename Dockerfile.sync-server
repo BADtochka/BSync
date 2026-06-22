@@ -3,10 +3,18 @@ FROM oven/bun:1.2-alpine
 WORKDIR /app
 
 ENV NODE_ENV=production \
-    WXT_WS_SERVER=ws://0.0.0.0:8787
+    WS_SERVER_URL=ws://0.0.0.0:8787
 
-COPY scripts/sync-server.js ./scripts/sync-server.js
+COPY package.json bun.lock ./
+COPY apps/extension/package.json ./apps/extension/package.json
+COPY apps/sync-server/package.json ./apps/sync-server/package.json
+COPY packages/sync-protocol/package.json ./packages/sync-protocol/package.json
+
+RUN bun install --frozen-lockfile --production --ignore-scripts
+
+COPY apps/sync-server/src ./apps/sync-server/src
+COPY packages/sync-protocol/src ./packages/sync-protocol/src
 
 EXPOSE 8787
 
-CMD ["bun", "./scripts/sync-server.js"]
+CMD ["bun", "./apps/sync-server/src/index.ts"]

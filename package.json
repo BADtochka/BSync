@@ -1,26 +1,23 @@
 {
   "name": "bsync",
-  "description": "Interactive browser sync overlay extension built with WXT and Preact.",
   "private": true,
-  "version": "0.0.2",
   "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "wxt",
-    "dev:firefox": "wxt -b firefox --mv3",
-    "build": "wxt build",
-    "build:firefox": "wxt build -b firefox --mv3",
-    "zip": "wxt zip",
-    "zip:firefox": "wxt zip -b firefox --mv3",
-    "sync-server": "bun scripts/sync-server.js",
-    "compile": "tsc --noEmit",
-    "postinstall": "wxt prepare"
-  },
-  "dependencies": {
-    "preact": "^10.29.2"
-  },
-  "devDependencies": {
-    "@preact/preset-vite": "^2.10.5",
-    "typescript": "^5.9.3",
-    "wxt": "^0.20.25"
+    "dev": "bun run --cwd apps/extension dev",
+    "dev:extension": "bun run --cwd apps/extension dev",
+    "dev:firefox": "bun run --cwd apps/extension dev:firefox",
+    "dev:sync-server": "bun run --cwd apps/sync-server dev",
+    "build": "bun run --cwd apps/extension build",
+    "build:firefox": "bun run --cwd apps/extension build:firefox",
+    "zip": "bun run --cwd apps/extension zip",
+    "zip:firefox": "bun run --cwd apps/extension zip:firefox",
+    "sync-server": "bun run --cwd apps/sync-server start",
+    "sync-server:dev": "bun run --cwd apps/sync-server dev",
+    "compile": "bun run --cwd packages/sync-protocol compile && bun run --cwd apps/extension compile && bun run --cwd apps/sync-server compile",
+    "postinstall": "bun run --cwd apps/extension postinstall"
   }
 }

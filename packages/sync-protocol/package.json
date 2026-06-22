@@ -1,0 +1,19 @@
+{
+  "name": "@bsync/sync-protocol",
+  "description": "Shared BSync WebSocket protocol types.",
+  "private": true,
+  "version": "0.0.2",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "compile": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

@@ -76,8 +76,8 @@ jobs:
       - name: Publish to Firefox Add-ons
         shell: bash
         run: |
-          firefox_zip="$(find .output -maxdepth 1 -name '*-firefox.zip' -print -quit)"
-          sources_zip="$(find .output -maxdepth 1 -name '*-sources.zip' -print -quit)"
+          firefox_zip="$(find apps/extension/.output -maxdepth 1 -name '*-firefox.zip' -print -quit)"
+          sources_zip="$(find apps/extension/.output -maxdepth 1 -name '*-sources.zip' -print -quit)"
 
           if [[ -z "$firefox_zip" || -z "$sources_zip" ]]; then
             echo "Firefox extension zip or sources zip was not generated" >&2

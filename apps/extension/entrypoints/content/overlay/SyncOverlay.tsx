@@ -1,19 +1,25 @@
-import { render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import {
-  formatTimeAgo,
-  getRoomTargetLabel,
-  getTabPageLabel,
+  addTrustedDomain,
+  canonicalRoomPageUrl,
+  isRoomBoundPage,
   isRoomTargetUrl,
-  statusLabel,
-  syncStateItem,
+  resolveSyncState,
+  shouldShowOverlayOnPage,
+  subscribeSyncState,
+  updateSyncState,
+  getSyncState,
   type BsyncContentMessage,
   type ContentPageSnapshot,
   type MediaSyncState,
   type SyncState,
-  type TabSyncState,
 } from '@/lib/sync-state';
-import './content/styles.css';
+import { OverlayDropGuides } from './OverlayDropGuides';
+import { OverlayPanel } from './OverlayPanel';
+import { getMediaDriftLabel } from './media';
+import { getOverlayPanelSize } from './geometry';
+import { useOverlayDrag } from './useOverlayDrag';
+import { useOverlaySnap } from './useOverlaySnap';
 
 const MEDIA_PUBLISH_EVENTS = ['play', 'pause', 'seeked', 'ratechange', 'loadedmetadata'];
 const MEDIA_CONTROL_EVENTS = ['play', 'pause', 'seeking', 'seeked', 'ratechange'];
@@ -64,22 +70,6 @@ function getMediaState(media: HTMLMediaElement): MediaSyncState {
   };
 }
 
-function getMediaDisplayLabel(media: MediaSyncState): string {
-  return `${media.paused ? 'Paused' : 'Playing'} · ${Math.round(media.currentTime)}s${
-    media.duration ? ` / ${Math.round(media.duration)}s` : ''
-  }`;
-}
-
-function getMediaDriftLabel(hostMedia: MediaSyncState | null, localMedia: MediaSyncState | null): string | null {
-  if (!hostMedia || !localMedia) return null;
-
-  const driftSeconds = Math.round(Math.abs(localMedia.currentTime - hostMedia.currentTime));
-  if (driftSeconds < 1 && localMedia.paused === hostMedia.paused) return 'in sync';
-
-  const playbackState = localMedia.paused === hostMedia.paused ? '' : ' · state differs';
-  return `${driftSeconds}s drift${playbackState}`;
-}
-
 function getMediaDriftSeconds(left: MediaSyncState, right: MediaSyncState): number {
   return Math.round(Math.abs(left.currentTime - right.currentTime) * 10) / 10;
 }
@@ -103,44 +93,123 @@ async function applyMediaState(media: HTMLMediaElement, remoteState: MediaSyncSt
   }
 }
 
-function SyncOverlay() {
+export function SyncOverlay() {
   const [state, setState] = useState<SyncState | null>(null);
   const [pageSnapshot, setPageSnapshot] = useState<ContentPageSnapshot>(() => getPageSnapshot());
+  const [currentPageUrl, setCurrentPageUrl] = useState(() => location.href);
   const [localMediaState, setLocalMediaState] = useState<MediaSyncState | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const [isDragging, setIsDragging] = useState(false);
-  const panelRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const gripRef = useRef<HTMLDivElement>(null);
+  const snapApiRef = useRef({
+    updateSnap: (_event: PointerEvent) => {},
+    resolveSnapPosition: (_event: PointerEvent) => null as SyncState['position'] | null,
+    resetSnap: () => {},
+  });
   const suppressMediaPublishUntilRef = useRef(0);
   const userIntentUntilRef = useRef(0);
   const userIntentMediaTimeRef = useRef<number | null>(null);
   const lastDetachSentAtRef = useRef(0);
   const stateRef = useRef<SyncState | null>(null);
   const lastPublishedMediaKeyRef = useRef('');
+  const guestMediaReadySentRef = useRef(false);
+  const onDragEndRef = useRef<(event: PointerEvent) => void>(() => {});
+
+  const pageUrl = currentPageUrl;
+  const isActiveRoomPage = state != null && isRoomBoundPage(state, pageUrl);
+  const shouldRenderOverlay = state != null && shouldShowOverlayOnPage(state, pageUrl);
 
   useEffect(() => {
-    let mounted = true;
+    const syncPageUrl = () => setCurrentPageUrl(location.href);
 
-    syncStateItem.getValue().then((value) => {
-      if (mounted) {
-        stateRef.current = value;
-        setState(value);
-      }
-    });
+    syncPageUrl();
+    window.addEventListener('hashchange', syncPageUrl);
+    window.addEventListener('popstate', syncPageUrl);
+    document.addEventListener('readystatechange', syncPageUrl);
 
-    const unwatch = syncStateItem.watch((value) => {
-      stateRef.current = value;
-      setState(value);
-    });
+    const originalPushState = history.pushState.bind(history);
+    const originalReplaceState = history.replaceState.bind(history);
+
+    history.pushState = (...args) => {
+      originalPushState(...args);
+      syncPageUrl();
+    };
+    history.replaceState = (...args) => {
+      originalReplaceState(...args);
+      syncPageUrl();
+    };
 
     return () => {
-      mounted = false;
-      unwatch();
+      window.removeEventListener('hashchange', syncPageUrl);
+      window.removeEventListener('popstate', syncPageUrl);
+      document.removeEventListener('readystatechange', syncPageUrl);
+      history.pushState = originalPushState;
+      history.replaceState = originalReplaceState;
     };
   }, []);
 
+  const {
+    dragOffset,
+    isDragging,
+    onGripPointerDown,
+    resetDragOffset,
+  } = useOverlayDrag({
+    panelRef,
+    gripRef,
+    watchKey: `${state?.overlayVisible}-${state?.compact}`,
+    onMove: (event) => snapApiRef.current.updateSnap(event),
+    onEnd: (event) => onDragEndRef.current(event),
+  });
+
+  onDragEndRef.current = async (event: PointerEvent) => {
+    const snapPosition = snapApiRef.current.resolveSnapPosition(event);
+    snapApiRef.current.resetSnap();
+
+    const current = stateRef.current;
+    if (!snapPosition || !current) return;
+
+    resetDragOffset();
+    await updateSyncState((current) => ({
+      ...current,
+      position: snapPosition,
+    }));
+  };
+
+  const snap = useOverlaySnap({
+    isDragging,
+    panelRef,
+  });
+
+  snapApiRef.current = {
+    updateSnap: snap.updateSnap,
+    resolveSnapPosition: snap.resolveSnapPosition,
+    resetSnap: snap.resetSnap,
+  };
+
   useEffect(() => {
+    if (!state?.position) return;
+    resetDragOffset();
+  }, [state?.position, resetDragOffset]);
+
+  useEffect(() => {
+    const unwatch = subscribeSyncState((merged) => {
+      stateRef.current = merged;
+      setState(merged);
+    });
+
+    return unwatch;
+  }, []);
+
+  useEffect(() => {
+    setCurrentPageUrl(location.href);
+  }, [state?.targetPage?.normalizedUrl, state?.targetPage?.createdAt, state?.roomRole]);
+
+  useEffect(() => {
+    if (!isActiveRoomPage) return;
+
     const publishMediaState = () => {
+      const latestState = stateRef.current;
+      if (!latestState || !isRoomBoundPage(latestState, location.href)) return;
+
       const media = getPrimaryMediaElement();
       if (!media) {
         setLocalMediaState(null);
@@ -150,8 +219,7 @@ function SyncOverlay() {
       const nextMediaState = getMediaState(media);
       setLocalMediaState(nextMediaState);
 
-      const latestState = stateRef.current;
-      if (latestState?.roomRole !== 'host') return;
+      if (latestState.roomRole !== 'host') return;
       if (Date.now() < suppressMediaPublishUntilRef.current) return;
 
       const publishKey = [
@@ -174,7 +242,8 @@ function SyncOverlay() {
 
     const sendDetachFromHost = (reason: string, mediaElement?: HTMLMediaElement | null) => {
       const latestState = stateRef.current;
-      if (latestState?.roomRole !== 'guest' || !latestState.followHost) return;
+      if (!latestState || !isRoomBoundPage(latestState, location.href)) return;
+      if (latestState.roomRole !== 'guest' || !latestState.followHost) return;
 
       const now = Date.now();
       if (now - lastDetachSentAtRef.current < DETACH_COOLDOWN_MS) return;
@@ -268,6 +337,9 @@ function SyncOverlay() {
     const progressTimer = setInterval(publishMediaState, 1000);
 
     const messageListener = (message: unknown) => {
+      const latestState = stateRef.current;
+      if (!latestState || !isRoomBoundPage(latestState, location.href)) return;
+
       const candidate = message as BsyncContentMessage;
       if (candidate?.type !== 'bsync:media-apply') return;
 
@@ -334,12 +406,15 @@ function SyncOverlay() {
       document.removeEventListener('touchstart', markUserIntent, true);
       document.removeEventListener('touchend', checkUserDrivenTimeShift, true);
     };
-  }, []);
+  }, [currentPageUrl, isActiveRoomPage, state?.targetPage?.normalizedUrl, state?.roomRole, state?.transportEnabled]);
 
   useEffect(() => {
-    if (!isTopFrame()) return;
+    if (!isTopFrame() || !isActiveRoomPage) return;
 
     const publish = () => {
+      const latestState = stateRef.current;
+      if (!latestState || !isRoomBoundPage(latestState, location.href)) return;
+
       const snapshot = getPageSnapshot();
       setPageSnapshot(snapshot);
       browser.runtime
@@ -374,227 +449,148 @@ function SyncOverlay() {
       document.removeEventListener('visibilitychange', publish);
       document.removeEventListener('readystatechange', publish);
     };
-  }, []);
+  }, [currentPageUrl, isActiveRoomPage, state?.targetPage?.normalizedUrl, state?.roomRole, state?.transportEnabled]);
 
   useEffect(() => {
-    const onPointerMove = (event: PointerEvent) => {
-      if (!isDragging) return;
-      setDragOffset((current) => ({
-        x: current.x + event.movementX,
-        y: current.y + event.movementY,
-      }));
-    };
+    if (!isActiveRoomPage) return;
 
-    const onPointerUp = () => setIsDragging(false);
+    guestMediaReadySentRef.current = false;
+  }, [currentPageUrl, isActiveRoomPage, state?.targetPage?.normalizedUrl]);
 
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', onPointerUp);
+  useEffect(() => {
+    if (!isActiveRoomPage) return;
 
-    return () => {
-      window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerup', onPointerUp);
-    };
-  }, [isDragging]);
+    const latestState = stateRef.current;
+    if (!latestState) return;
+    if (latestState.roomRole !== 'guest' || !latestState.followHost) return;
+    if (!latestState.roomMedia || !localMediaState) return;
+    if (!isRoomTargetUrl(latestState.targetPage, location.href)) return;
+    if (guestMediaReadySentRef.current) return;
 
-  if (
-    !isTopFrame() ||
-    !state ||
-    !state.enabled ||
-    !state.overlayVisible ||
-    (!state.pendingFocusRequest && !isRoomTargetUrl(state.targetPage, location.href))
-  ) {
+    guestMediaReadySentRef.current = true;
+    browser.runtime.sendMessage({ type: 'bsync:guest-sync' }).catch(() => undefined);
+  }, [
+    currentPageUrl,
+    isActiveRoomPage,
+    localMediaState,
+    state?.followHost,
+    state?.roomMedia,
+    state?.targetPage?.normalizedUrl,
+  ]);
+
+  useEffect(() => {
+    const host = document.querySelector<HTMLElement>('bsync-page-overlay');
+    if (!host) return;
+
+    host.dataset.bsyncMounted = 'true';
+    host.dataset.bsyncHasState = String(Boolean(state));
+    host.dataset.bsyncShouldShow = String(shouldRenderOverlay);
+    host.dataset.bsyncEnabled = String(state?.enabled ?? null);
+    host.dataset.bsyncOverlayVisible = String(state?.overlayVisible ?? null);
+    host.dataset.bsyncRole = state?.roomRole ?? 'none';
+    host.dataset.bsyncTransportEnabled = String(state?.transportEnabled ?? null);
+    host.dataset.bsyncPendingFocus = String(Boolean(state?.pendingFocusRequest));
+    host.dataset.bsyncPageUrl = pageUrl;
+    host.dataset.bsyncCanonicalPageUrl = canonicalRoomPageUrl(pageUrl) ?? '';
+    host.dataset.bsyncRawTargetUrl = state?.targetPage?.url ?? '';
+    host.dataset.bsyncTargetUrl = state?.targetPage?.normalizedUrl ?? '';
+    host.dataset.bsyncCanonicalTargetUrl = state?.targetPage
+      ? (canonicalRoomPageUrl(state.targetPage.normalizedUrl) ?? '')
+      : '';
+  }, [
+    pageUrl,
+    shouldRenderOverlay,
+    state,
+    state?.enabled,
+    state?.overlayVisible,
+    state?.pendingFocusRequest,
+    state?.roomRole,
+    state?.targetPage?.normalizedUrl,
+    state?.targetPage?.url,
+    state?.transportEnabled,
+  ]);
+
+  if (!isTopFrame() || !state || !shouldRenderOverlay) {
     return null;
   }
 
   const handleHide = async () => {
-    await syncStateItem.setValue(
-      {
-        ...state,
-        overlayVisible: false,
-      },
-    );
+    await updateSyncState((current) => ({
+      ...current,
+      overlayVisible: false,
+    }));
   };
 
   const handleFollowHost = async () => {
-    const current = await syncStateItem.getValue();
-    await syncStateItem.setValue({
+    await updateSyncState((current) => ({
       ...current,
       followHost: true,
       detachedReason: null,
-    });
+    }));
   };
 
-  const openPendingFocus = async (mode: 'current' | 'new') => {
-    const current = await syncStateItem.getValue();
-    const focusRequest = current.pendingFocusRequest;
+  const openPendingFocus = async (mode: 'current' | 'new', trustSite: boolean) => {
+    const current = await getSyncState();
+    const focusRequest = resolveSyncState(current).pendingFocusRequest;
     if (!focusRequest) return;
 
     const { targetPage } = focusRequest;
 
     await browser.runtime.sendMessage({
       type: 'bsync:focus-open',
-      payload: { mode, targetPage },
+      payload: { mode, targetPage, trustSite },
     });
 
-    await syncStateItem.setValue({
-      ...current,
+    await updateSyncState((latest) => ({
+      ...latest,
       targetPage,
       overlayVisible: true,
       pendingFocusRequest: null,
-    });
+      followHost: true,
+      detachedReason: null,
+      trustedDomains: trustSite
+        ? addTrustedDomain(latest.trustedDomains ?? [], targetPage.hostname || targetPage.url)
+        : latest.trustedDomains,
+    }));
+  };
+
+  const handleToggleCompact = async () => {
+    await updateSyncState((current) => ({
+      ...current,
+      compact: !current.compact,
+    }));
   };
 
   const mediaDriftLabel = getMediaDriftLabel(state.roomMedia, localMediaState);
+  const dropGuidesPanelSize = panelRef.current
+    ? getOverlayPanelSize(panelRef.current)
+    : snap.panelSize;
 
   return (
-    <div
-      ref={panelRef}
-      className={`bsync-overlay bsync-overlay--${state.position} ${
-        collapsed || state.compact ? 'is-compact' : ''
-      } ${isDragging ? 'is-dragging' : ''}`}
-      style={{
-        transform: `translate(${dragOffset.x}px, ${dragOffset.y}px)`,
-      }}
-    >
-      <div
-        className="bsync-grip"
-        onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId);
-          setIsDragging(true);
-        }}
-        title="Drag overlay"
-      >
-        <span />
-        <span />
-        <span />
-      </div>
-
-      <div className="bsync-header">
-        <div>
-          <span className={`bsync-dot bsync-dot--${state.status}`} />
-          <strong>{statusLabel(state.status)}</strong>
-        </div>
-        <button type="button" onClick={() => setCollapsed((value) => !value)}>
-          {collapsed || state.compact ? 'Open' : 'Min'}
-        </button>
-      </div>
-
-      <div className="bsync-body">
-        <div className="bsync-room">
-          <span>{state.roomCode}</span>
-          <small>
-            {state.roomRole === 'host'
-              ? 'Host control'
-              : state.followHost
-                ? 'Following host'
-                : 'Detached'}
-          </small>
-        </div>
-
-        {state.roomRole !== 'host' && state.pendingFocusRequest ? (
-          <div className="bsync-focus-request">
-            <div>
-              <strong>Host wants to switch page</strong>
-              <small>{getRoomTargetLabel(state.pendingFocusRequest.targetPage)}</small>
-            </div>
-            <div className="bsync-focus-actions">
-              <button type="button" className="is-primary" onClick={() => openPendingFocus('current')}>
-                В текущей
-              </button>
-              <button type="button" onClick={() => openPendingFocus('new')}>
-                В новой
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        {state.roomRole === 'guest' && !state.followHost ? (
-          <div className="bsync-detached">
-            <div>
-              <strong>Not synced with host</strong>
-              <small>{state.detachedReason ?? 'Local playback control'}</small>
-            </div>
-            <button type="button" className="is-primary" onClick={handleFollowHost}>
-              Follow host
-            </button>
-          </div>
-        ) : null}
-
-        <div className="bsync-progress" aria-label="Sync progress">
-          <span style={{ width: `${state.progressPercent}%` }} />
-        </div>
-
-        <div className="bsync-grid">
-          <div>
-            <small>Peers</small>
-            <strong>{state.peerCount}</strong>
-          </div>
-          <div>
-            <small>Latency</small>
-            <strong>{state.latencyMs}ms</strong>
-          </div>
-          <div>
-            <small>Last sync</small>
-            <strong>{formatTimeAgo(state.lastSyncedAt)}</strong>
-          </div>
-        </div>
-
-        <p className="bsync-page">
-          {getTabPageLabel({
-            tabId: 0,
-            ...pageSnapshot,
-            updatedAt: Date.now(),
-          } satisfies TabSyncState)}
-        </p>
-
-        <p className="bsync-page">
-          {state.roomMedia
-            ? `Host: ${getMediaDisplayLabel(state.roomMedia)}`
-            : 'No room media found'}
-        </p>
-
-        {state.roomRole === 'guest' ? (
-          <p className="bsync-page">
-            {localMediaState
-              ? `Local: ${getMediaDisplayLabel(localMediaState)}${
-                  mediaDriftLabel ? ` · ${mediaDriftLabel}` : ''
-                }`
-              : 'Local: no media found'}
-          </p>
-        ) : null}
-
-        <div className="bsync-actions">
-          <button type="button" onClick={handleHide}>
-            Hide
-          </button>
-        </div>
-      </div>
-    </div>
+    <>
+      <OverlayDropGuides
+        visible={isDragging}
+        currentPosition={state.position}
+        panelSize={dropGuidesPanelSize}
+        hintedZones={snap.hintedZones}
+        hoveredZone={snap.hoveredZone}
+        activeZone={snap.activeZone}
+      />
+      <OverlayPanel
+        state={state}
+        pageSnapshot={pageSnapshot}
+        localMediaState={localMediaState}
+        mediaDriftLabel={mediaDriftLabel}
+        isDragging={isDragging}
+        dragOffset={dragOffset}
+        panelRef={panelRef}
+        gripRef={gripRef}
+        onGripPointerDown={onGripPointerDown}
+        onToggleCompact={handleToggleCompact}
+        onHide={handleHide}
+        onFollowHost={handleFollowHost}
+        onOpenPendingFocus={openPendingFocus}
+      />
+    </>
   );
 }
-
-export default defineContentScript({
-  matches: ['<all_urls>'],
-  allFrames: true,
-  matchAboutBlank: true,
-  cssInjectionMode: 'ui',
-  runAt: 'document_idle',
-  async main(ctx) {
-    const ui = await createShadowRootUi(ctx, {
-      name: 'bsync-page-overlay',
-      position: 'overlay',
-      alignment: 'top-left',
-      zIndex: 2147483647,
-      isolateEvents: true,
-      onMount(container) {
-        render(<SyncOverlay />, container);
-        return container;
-      },
-      onRemove(container) {
-        if (container) render(null, container);
-      },
-    });
-
-    ui.mount();
-  },
-});

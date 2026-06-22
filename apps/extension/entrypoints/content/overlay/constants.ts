@@ -1,0 +1,6 @@
+export const OVERLAY_VIEWPORT_MARGIN = 8;
+export const OVERLAY_CORNER_INSET = 18;
+export const OVERLAY_DROP_ZONE_PADDING = 8;
+export const OVERLAY_APPROACH_DISTANCE = 80;
+export const OVERLAY_SNAP_HOLD_MS = 350;
+export const OVERLAY_DROP_GUIDES_FADE_MS = 180;

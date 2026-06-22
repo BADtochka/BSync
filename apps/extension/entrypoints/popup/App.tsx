@@ -1,29 +1,28 @@
-import { useEffect, useState } from 'preact/hooks';
 import {
-  addActivity,
-  createRoomTargetPage,
-  formatTimeAgo,
-  generateRoomCode,
-  getRoomTargetLabel,
-  getTabPageLabel,
-  normalizeRoomCode,
-  statusLabel,
-  syncStateItem,
-  tabStateItem,
-  type OverlayPosition,
-  type SyncState,
-  type TabSyncState,
-  type TransportStatus,
+    addActivity,
+    addTrustedDomain,
+    createRoomTargetPage,
+    mergeRoomTargetPageForFocus,
+    formatTimeAgo,
+    generateRoomCode,
+    getFocusRequestTitle,
+    getRoomTargetLabel,
+    getTabPageLabel,
+    normalizeRoomCode,
+    openRoomTargetPage,
+    resolveFocusRequestSource,
+    resolveInRoomSyncStatus,
+    statusLabel,
+    syncStateItem,
+    tabStateItem,
+    type SyncState,
+    type TabSyncState,
+    type TransportStatus,
 } from '@/lib/sync-state';
-import logoUrl from '@/assets/logo.svg';
+import { useEffect, useState } from 'preact/hooks';
 import './App.css';
-
-const positions: Array<{ value: OverlayPosition; label: string }> = [
-  { value: 'top-right', label: 'TR' },
-  { value: 'top-left', label: 'TL' },
-  { value: 'bottom-right', label: 'BR' },
-  { value: 'bottom-left', label: 'BL' },
-];
+import { SettingsPanel } from './SettingsPanel';
+import logoUrl from '/logo.svg';
 
 function transportLabel(status: TransportStatus): string {
   switch (status) {
@@ -74,12 +73,20 @@ function App() {
   const [tabStates, setTabStates] = useState<Record<string, TabSyncState>>({});
   const [activeBrowserTab, setActiveBrowserTab] = useState<ActiveBrowserTab | null>(null);
   const [joinCode, setJoinCode] = useState('');
+  const [popupView, setPopupView] = useState<'main' | 'settings'>('main');
+  const [trustFocusSite, setTrustFocusSite] = useState(false);
+
+  useEffect(() => {
+    setTrustFocusSite(false);
+  }, [state?.pendingFocusRequest?.targetPage.url]);
 
   useEffect(() => {
     let mounted = true;
 
     syncStateItem.getValue().then((value) => {
-      if (mounted) setState(value);
+      if (mounted) {
+        setState(value);
+      }
     });
 
     const unwatch = syncStateItem.watch((value) => {
@@ -94,16 +101,18 @@ function App() {
 
   useEffect(() => {
     let mounted = true;
+    const activeTabIdRef = { current: undefined as number | undefined };
 
     const refreshActiveTab = async () => {
       const [tab] = await browser.tabs.query({
         active: true,
-        currentWindow: true,
+        lastFocusedWindow: true,
       });
 
-      if (mounted) {
-        setActiveBrowserTab(tab ? { id: tab.id, title: tab.title, url: tab.url } : null);
-      }
+      if (!mounted) return;
+
+      activeTabIdRef.current = tab?.id;
+      setActiveBrowserTab(tab ? { id: tab.id, title: tab.title, url: tab.url } : null);
     };
 
     tabStateItem.getValue().then((value) => {
@@ -111,30 +120,41 @@ function App() {
     });
 
     const unwatch = tabStateItem.watch((value) => {
-      setTabStates(value);
+      if (mounted) setTabStates(value);
     });
 
     const handleActivated = () => {
       refreshActiveTab().catch(console.error);
     };
 
-    const handleUpdated = (tabId: number) => {
-      if (tabId === activeBrowserTab?.id) {
+    const handleUpdated = (
+      tabId: number,
+      changeInfo: Browser.tabs.OnUpdatedInfo,
+    ) => {
+      if (tabId !== activeTabIdRef.current) return;
+      if (changeInfo.url || changeInfo.title || changeInfo.status === 'complete') {
         refreshActiveTab().catch(console.error);
       }
+    };
+
+    const handleWindowFocusChanged = (windowId: number) => {
+      if (windowId === browser.windows.WINDOW_ID_NONE) return;
+      refreshActiveTab().catch(console.error);
     };
 
     refreshActiveTab().catch(console.error);
     browser.tabs.onActivated.addListener(handleActivated);
     browser.tabs.onUpdated.addListener(handleUpdated);
+    browser.windows.onFocusChanged.addListener(handleWindowFocusChanged);
 
     return () => {
       mounted = false;
       unwatch();
       browser.tabs.onActivated.removeListener(handleActivated);
       browser.tabs.onUpdated.removeListener(handleUpdated);
+      browser.windows.onFocusChanged.removeListener(handleWindowFocusChanged);
     };
-  }, [activeBrowserTab?.id]);
+  }, []);
 
   const commit = async (
     updater: (current: SyncState) => SyncState,
@@ -148,7 +168,19 @@ function App() {
 
   const getActiveTabState = () => {
     if (activeBrowserTab?.id == null) return null;
-    return tabStates[String(activeBrowserTab.id)] ?? getFallbackTabState(activeBrowserTab);
+
+    const fallback = getFallbackTabState(activeBrowserTab);
+    const tracked = tabStates[String(activeBrowserTab.id)];
+    if (!fallback) return tracked ?? null;
+    if (!tracked) return fallback;
+
+    return {
+      ...tracked,
+      title: fallback.title,
+      url: fallback.url,
+      hostname: fallback.hostname,
+      updatedAt: Math.max(tracked.updatedAt, fallback.updatedAt),
+    };
   };
 
   const hostRoom = async () => {
@@ -167,19 +199,27 @@ function App() {
 
     const targetPage = createRoomTargetPage(currentTabState);
     const roomCode = generateRoomCode();
+    const transportStatus: TransportStatus =
+      state?.transportStatus === 'online' ? 'online' : 'connecting';
+    const nextRoomState = {
+      roomRole: 'host' as const,
+      transportEnabled: true,
+      transportStatus,
+    };
 
     await commit(
       (current) => ({
         ...current,
         enabled: true,
         overlayVisible: true,
-        transportEnabled: true,
-        transportStatus: current.transportStatus === 'online' ? 'online' : 'connecting',
+        ...nextRoomState,
         roomCode,
-        roomRole: 'host',
         followHost: true,
         detachedReason: null,
-        status: 'idle',
+        status: resolveInRoomSyncStatus(
+          { ...current, ...nextRoomState },
+          transportStatus,
+        ),
         targetPage,
         pendingFocusRequest: null,
         progressPercent: 0,
@@ -205,21 +245,30 @@ function App() {
       return;
     }
 
+    const transportStatus: TransportStatus =
+      state?.transportStatus === 'online' ? 'online' : 'connecting';
+    const nextRoomState = {
+      roomRole: 'guest' as const,
+      transportEnabled: true,
+      transportStatus,
+    };
+
     await commit(
       (current) => ({
         ...current,
         enabled: true,
         overlayVisible: true,
-        transportEnabled: true,
-        transportStatus: current.transportStatus === 'online' ? 'online' : 'connecting',
+        ...nextRoomState,
         roomCode,
-        roomRole: 'guest',
         followHost: true,
         detachedReason: null,
         targetPage: null,
         pendingFocusRequest: null,
         roomMedia: null,
-        status: 'connecting',
+        status: resolveInRoomSyncStatus(
+          { ...current, ...nextRoomState },
+          transportStatus,
+        ),
         peerCount: 1,
         lastTransportError: null,
       }),
@@ -254,11 +303,10 @@ function App() {
   };
 
   if (!state) {
-    return <main className="popup-shell is-loading">Loading</main>;
+    return <main className='popup-shell is-loading'>Loading</main>;
   }
 
-  const activeTabState =
-    activeBrowserTab?.id == null ? null : getActiveTabState();
+  const activeTabState = activeBrowserTab?.id == null ? null : getActiveTabState();
   const roomRole = state.roomRole ?? 'none';
   const isInRoom = roomRole !== 'none';
 
@@ -288,7 +336,11 @@ function App() {
       return;
     }
 
-    const targetPage = createRoomTargetPage(currentTabState);
+    const targetPage = mergeRoomTargetPageForFocus(
+      state?.targetPage ?? null,
+      createRoomTargetPage(currentTabState),
+      currentTabState.url,
+    );
 
     await commit(
       (current) => ({
@@ -310,61 +362,67 @@ function App() {
     if (!focusRequest) return;
 
     const { targetPage } = focusRequest;
-
-    if (mode === 'new') {
-      await browser.tabs.create({
-        url: targetPage.url,
-        active: true,
-      });
-    } else {
-      const [tab] = await browser.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-
-      if (tab?.id != null) {
-        await browser.tabs.update(tab.id, {
-          url: targetPage.url,
-          active: true,
-        });
-      } else {
-        await browser.tabs.create({
-          url: targetPage.url,
-          active: true,
-        });
-      }
-    }
+    const trustedDomains = trustFocusSite
+      ? addTrustedDomain(state.trustedDomains ?? [], targetPage.hostname || targetPage.url)
+      : (state.trustedDomains ?? []);
+    const resolvedMode = await openRoomTargetPage(
+      targetPage,
+      mode,
+      trustedDomains,
+    );
 
     await commit(
       (current) => ({
         ...current,
         targetPage,
-        overlayVisible: true,
         pendingFocusRequest: null,
+        followHost: true,
+        detachedReason: null,
+        trustedDomains: trustFocusSite
+          ? addTrustedDomain(current.trustedDomains ?? [], targetPage.hostname || targetPage.url)
+          : current.trustedDomains,
       }),
-      `Focused room page ${mode === 'new' ? 'in new tab' : 'in current tab'}`,
+      trustFocusSite
+        ? `Focused room page ${resolvedMode === 'new' ? 'in new tab' : 'in current tab'} and trusted ${targetPage.hostname || 'site'}`
+        : `Focused room page ${resolvedMode === 'new' ? 'in new tab' : 'in current tab'}`,
       'success',
     );
+    setTrustFocusSite(false);
   };
 
+  if (popupView === 'settings') {
+    return (
+      <main className='popup-shell'>
+        <SettingsPanel
+          state={state!}
+          onBack={() => setPopupView('main')}
+          onCommit={commit}
+        />
+      </main>
+    );
+  }
+
   return (
-    <main className="popup-shell">
-      <section className="hero">
-        <div className="brand">
-          <img src={logoUrl} alt="" className="brand-logo" />
+    <main className='popup-shell'>
+      <section className='hero'>
+        <div className='brand'>
+          <img src={logoUrl} alt='' className='brand-logo' />
           <div>
-            <span className={`status-pill status-pill--${state.status}`}>
-              {statusLabel(state.status)}
-            </span>
-            <span className={`transport-pill transport-pill--${state.transportStatus}`}>
-              {transportLabel(state.transportStatus)}
-            </span>
             <h1>BSync</h1>
           </div>
         </div>
-        <button
-          type="button"
-          className={state.enabled ? 'power is-on' : 'power'}
+        <div className='hero-actions'>
+          <button
+            type='button'
+            className='settings-button'
+            onClick={() => setPopupView('settings')}
+            aria-label='Open settings'
+          >
+            Settings
+          </button>
+          <button
+            type='button'
+            className={state.enabled ? 'power is-on' : 'power'}
           onClick={() =>
             commit(
               (current) => ({
@@ -381,52 +439,67 @@ function App() {
         >
           {state.enabled ? 'On' : 'Off'}
         </button>
+        </div>
       </section>
 
       {isInRoom ? (
-        <section className="current-room">
+        <section className='current-room'>
           <span>{roomRole === 'host' ? 'Hosting room' : 'Joined room'}</span>
           <strong>{state.roomCode}</strong>
-          <small>
-            {transportLabel(state.transportStatus)} · {state.peerCount} peer
-            {state.peerCount === 1 ? '' : 's'}
-          </small>
+          <div className='current-room-status'>
+            <span className={`status-pill status-pill--${state.status}`}>{statusLabel(state.status)}</span>
+            <span className={`transport-pill transport-pill--${state.transportStatus}`}>
+              {transportLabel(state.transportStatus)}
+            </span>
+          </div>
           {roomRole === 'guest' ? (
             <div className={state.followHost ? 'follow-state is-on' : 'follow-state'}>
               <span>{state.followHost ? 'Following host' : 'Detached'}</span>
               <small>{state.detachedReason ?? 'Local playback changes are ignored by the room.'}</small>
               {!state.followHost ? (
-                <button type="button" className="primary" onClick={followHost}>
+                <button type='button' className='primary' onClick={followHost}>
                   Follow host
                 </button>
               ) : null}
             </div>
           ) : null}
           {roomRole === 'host' ? (
-            <button type="button" className="primary" onClick={focusActiveTab}>
+            <button type='button' className='primary' onClick={focusActiveTab}>
               Focus active tab
             </button>
           ) : null}
           {roomRole !== 'host' && state.pendingFocusRequest ? (
-            <div className="focus-request">
-              <span>Host wants to switch page</span>
-              <strong>{getRoomTargetLabel(state.pendingFocusRequest.targetPage)}</strong>
-              <div className="button-row">
-                <button type="button" className="primary" onClick={() => openPendingFocus('current')}>
-                  В текущей
+            <div className='focus-request'>
+              <span>{getFocusRequestTitle(resolveFocusRequestSource(state.pendingFocusRequest))}</span>
+              <strong>{state.pendingFocusRequest.targetPage.title}</strong>
+              <small className='focus-request-url'>{state.pendingFocusRequest.targetPage.url}</small>
+              <label className='field-row focus-request-trust trust-switch'>
+                <span>Always trust this site</span>
+                <span className='trust-switch-control'>
+                  <input
+                    type='checkbox'
+                    checked={trustFocusSite}
+                    onChange={(event) => setTrustFocusSite(event.currentTarget.checked)}
+                  />
+                  <span className='trust-switch-track' aria-hidden='true' />
+                </span>
+              </label>
+              <div className='button-row'>
+                <button type='button' className='primary' onClick={() => openPendingFocus('current')}>
+                  In current tab
                 </button>
-                <button type="button" onClick={() => openPendingFocus('new')}>
-                  В новой
+                <button type='button' onClick={() => openPendingFocus('new')}>
+                  In new tab
                 </button>
               </div>
             </div>
           ) : null}
-          <button type="button" className="danger" onClick={leaveRoom}>
+          <button type='button' className='danger' onClick={leaveRoom}>
             Leave room
           </button>
         </section>
       ) : (
-        <section className="session-panel">
+        <section className='session-panel'>
           <label>
             <span>Name</span>
             <input
@@ -453,37 +526,35 @@ function App() {
             />
           </label>
 
-          <div className="room-choice">
+          <div className='room-choice'>
             <div>
               <span>Create room</span>
               <small>Uses the active tab as the shared page.</small>
             </div>
-            <button type="button" className="primary" onClick={hostRoom}>
+            <button type='button' className='primary' onClick={hostRoom}>
               Create
             </button>
           </div>
 
-          <div className="join-box">
+          <div className='join-box'>
             <label>
               <span>Join room</span>
               <input
-                inputMode="numeric"
+                inputMode='numeric'
                 maxLength={6}
-                placeholder="6 digit code"
+                placeholder='6 digit code'
                 value={joinCode}
-                onChange={(event) =>
-                  setJoinCode(event.currentTarget.value.replace(/\D/g, '').slice(0, 6))
-                }
+                onChange={(event) => setJoinCode(event.currentTarget.value.replace(/\D/g, '').slice(0, 6))}
               />
             </label>
-            <button type="button" onClick={joinRoom}>
+            <button type='button' onClick={joinRoom}>
               Join
             </button>
           </div>
         </section>
       )}
 
-      <section className="metrics">
+      <section className='metrics'>
         <div>
           <span>Peers</span>
           <strong>{state.peerCount}</strong>
@@ -498,19 +569,17 @@ function App() {
         </div>
       </section>
 
-      <section className="active-tab">
+      <section className='active-tab'>
         <span>Active tab</span>
         <strong>{getTabPageLabel(activeTabState)}</strong>
         <small>
           {activeTabState
-            ? `${activeTabState.visible ? 'visible' : 'background'} · ${formatTimeAgo(
-                activeTabState.updatedAt,
-              )}`
+            ? `${activeTabState.visible ? 'visible' : 'background'} · ${formatTimeAgo(activeTabState.updatedAt)}`
             : 'Waiting for content script'}
         </small>
       </section>
 
-      <section className="room-target">
+      <section className='room-target'>
         <span>Room page</span>
         <strong>{getRoomTargetLabel(state.targetPage)}</strong>
         <small>
@@ -521,95 +590,11 @@ function App() {
       </section>
 
       {state.lastTransportError ? (
-        <section className="transport-error">
+        <section className='transport-error'>
           <span>Transport</span>
           <strong>{state.lastTransportError}</strong>
         </section>
       ) : null}
-
-      <section className="control-panel">
-        <div className="field-row">
-          <span>Overlay</span>
-          <button
-            type="button"
-            className={state.overlayVisible ? 'toggle is-on' : 'toggle'}
-            onClick={() =>
-              commit(
-                (current) => ({
-                  ...current,
-                  overlayVisible: !current.overlayVisible,
-                }),
-                state.overlayVisible ? 'Overlay hidden' : 'Overlay shown',
-              )
-            }
-          >
-            {state.overlayVisible ? 'Visible' : 'Hidden'}
-          </button>
-        </div>
-
-        <div className="field-row">
-          <span>Compact</span>
-          <button
-            type="button"
-            className={state.compact ? 'toggle is-on' : 'toggle'}
-            onClick={() =>
-              commit((current) => ({
-                ...current,
-                compact: !current.compact,
-              }))
-            }
-          >
-            {state.compact ? 'On' : 'Off'}
-          </button>
-        </div>
-
-        <div className="segmented" aria-label="Overlay position">
-          {positions.map((position) => (
-            <button
-              key={position.value}
-              type="button"
-              className={state.position === position.value ? 'is-active' : ''}
-              onClick={() =>
-                commit((current) => ({
-                  ...current,
-                  position: position.value,
-                }))
-              }
-            >
-              {position.label}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="activity">
-        <div className="section-title">
-          <span>Activity</span>
-          <button
-            type="button"
-            onClick={() =>
-              commit((current) => ({
-                ...current,
-                activity: [],
-              }))
-            }
-          >
-            Clear
-          </button>
-        </div>
-
-        {state.activity.length > 0 ? (
-          state.activity.map((item) => (
-            <div key={item.id} className={`activity-item activity-item--${item.tone}`}>
-              <span />
-              <p>{item.label}</p>
-              <time>{formatTimeAgo(item.at)}</time>
-            </div>
-          ))
-        ) : (
-          <p className="empty">No events yet</p>
-        )}
-      </section>
     </main>
   );
 }

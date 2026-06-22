@@ -1,0 +1,19 @@
+{
+  "name": "@bsync/sync-server",
+  "description": "BSync Bun WebSocket relay server.",
+  "private": true,
+  "version": "0.0.2",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts ../../packages/sync-protocol/src/index.ts",
+    "start": "bun src/index.ts",
+    "compile": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bsync/sync-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  }
+}

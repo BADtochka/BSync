@@ -1,9 +1,18 @@
 import {
   addActivity,
+  addTrustedDomain,
+  createGuestTargetPageState,
+  createTabSnapshotFromBrowserTab,
+  ensureBrowserSessionScopedRoomState,
   isBsyncRuntimeMessage,
   isBsyncWsServerMessage,
   isRoomTargetUrl,
   normalizeSyncUrl,
+  openRoomTargetPage,
+  resetRoomSessionForBrowserStartup,
+  resolveInRoomSyncStatus,
+  resolveSyncState,
+  resolveTrustedOpenTabId,
   statusLabel,
   syncStateItem,
   tabStateItem,
@@ -13,6 +22,8 @@ import {
   type MediaSyncState,
   type RoomTargetPage,
   type SyncActivity,
+  type GuestTargetPageResolution,
+  type BsyncStateSyncMessage,
   type SyncState,
 } from '@/lib/sync-state';
 
@@ -38,7 +49,7 @@ async function updateTabState(tabId: number, snapshot: ContentPageSnapshot) {
 
   await tabStateItem.setValue({
     ...tabStates,
-    [tabId]: {
+    [String(tabId)]: {
       tabId,
       ...snapshot,
       updatedAt: Date.now(),
@@ -46,12 +57,25 @@ async function updateTabState(tabId: number, snapshot: ContentPageSnapshot) {
   });
 }
 
+async function syncTabStateFromBrowser(tabId: number) {
+  try {
+    const tab = await browser.tabs.get(tabId);
+    const snapshot = createTabSnapshotFromBrowserTab(tab);
+    if (!snapshot) return;
+
+    await updateTabState(tabId, snapshot);
+  } catch {
+    // Tab may disappear while switching.
+  }
+}
+
 async function removeTabState(tabId: number) {
   const tabStates = await tabStateItem.getValue();
-  if (!(tabId in tabStates)) return;
+  const key = String(tabId);
+  if (!(key in tabStates)) return;
 
   const next = { ...tabStates };
-  delete next[tabId];
+  delete next[key];
   await tabStateItem.setValue(next);
 }
 
@@ -72,6 +96,12 @@ const MEDIA_ACTIVITY_THROTTLE_MS = 5000;
 const MEDIA_APPLY_ACK_TIMEOUT_MS = 4000;
 
 export default defineBackground(() => {
+  browser.runtime.onStartup.addListener(() => {
+    resetRoomSessionForBrowserStartup().catch(console.error);
+  });
+
+  ensureBrowserSessionScopedRoomState().catch(console.error);
+
   let socket: WebSocket | null = null;
   let socketUrl = '';
   let activeState: SyncState | null = null;
@@ -84,11 +114,37 @@ export default defineBackground(() => {
   let lastJoinKey = '';
   let lastRoomTargetKey = '';
   let lastMediaKey = '';
-  let lastEnsuredTargetUrl = '';
   let lastTransportReconcileKey = '';
   let statePatchQueue: Promise<unknown> = Promise.resolve();
   const activityLogAt = new Map<string, number>();
   const pendingMediaApplyTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const pendingGuestSyncUrls = new Set<string>();
+  let previousWatchState: SyncState | null = null;
+  let stateBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const broadcastSyncState = (state: SyncState) => {
+    if (stateBroadcastTimer) clearTimeout(stateBroadcastTimer);
+
+    stateBroadcastTimer = setTimeout(() => {
+      stateBroadcastTimer = null;
+      const payload = resolveSyncState(state);
+
+      browser.tabs
+        .query({})
+        .then((tabs) => {
+          for (const tab of tabs) {
+            if (tab.id == null) continue;
+            browser.tabs
+              .sendMessage(tab.id, {
+                type: 'bsync:state-sync',
+                payload,
+              } satisfies BsyncStateSyncMessage)
+              .catch(() => undefined);
+          }
+        })
+        .catch(console.error);
+    }, 32);
+  };
 
   const refreshBadge = async () => {
     const actionApi = getBadgeActionApi();
@@ -132,84 +188,26 @@ export default defineBackground(() => {
     patchSyncState((state) => addActivity(state, label, tone)).catch(console.error);
   };
 
-  const ensureTargetPageTab = async (targetPage: RoomTargetPage) => {
-    const normalizedTargetUrl = normalizeSyncUrl(targetPage.url);
-    if (!normalizedTargetUrl || normalizedTargetUrl === lastEnsuredTargetUrl) return;
-
-    const tabs = await browser.tabs.query({});
-    const existingTab = tabs.find((tab) => {
-      if (!tab.url) return false;
-      return normalizeSyncUrl(tab.url) === normalizedTargetUrl;
-    });
-
-    lastEnsuredTargetUrl = normalizedTargetUrl;
-
-    if (existingTab?.id != null) {
-      await browser.tabs.update(existingTab.id, { active: true });
-      await patchSyncState((state) =>
-        addActivity(
-          state,
-          `Room page tab activated: ${targetPage.hostname || targetPage.title}`,
-          'info',
-        ),
-      );
-      return;
-    }
-
-    await browser.tabs.create({
-      url: targetPage.url,
-      active: true,
-    });
-
-    await patchSyncState((state) =>
-      addActivity(
-        state,
-        `Room page opened: ${targetPage.hostname || targetPage.title}`,
-        'success',
-      ),
-    );
-  };
-
   const openFocusTarget = async (mode: 'current' | 'new') => {
     const latestState = await syncStateItem.getValue();
     const focusRequest = latestState.pendingFocusRequest;
     if (!focusRequest) return;
 
     const { targetPage } = focusRequest;
-
-    if (mode === 'new') {
-      await browser.tabs.create({
-        url: targetPage.url,
-        active: true,
-      });
-    } else {
-      const [activeTab] = await browser.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-
-      if (activeTab?.id != null) {
-        await browser.tabs.update(activeTab.id, {
-          url: targetPage.url,
-          active: true,
-        });
-      } else {
-        await browser.tabs.create({
-          url: targetPage.url,
-          active: true,
-        });
-      }
-    }
+    const resolvedMode = await openRoomTargetPage(
+      targetPage,
+      mode,
+      latestState.trustedDomains ?? [],
+    );
 
     await patchSyncState((state) =>
       addActivity(
         {
           ...state,
           targetPage,
-          overlayVisible: true,
           pendingFocusRequest: null,
         },
-        `Focused room page ${mode === 'new' ? 'in new tab' : 'in current tab'}`,
+        `Focused room page ${resolvedMode === 'new' ? 'in new tab' : 'in current tab'}`,
         'success',
       ),
     );
@@ -399,65 +397,166 @@ export default defineBackground(() => {
     if ('clientId' in message && message.clientId === activeState.clientId) return;
 
     switch (message.type) {
-      case 'joined':
-        if (message.targetPage) {
-          await ensureTargetPageTab(message.targetPage);
-        }
+      case 'joined': {
+        const [activeTab] = await browser.tabs.query({
+          active: true,
+          currentWindow: true,
+        });
+        const activeTabUrl = activeTab?.url;
+        const joinedBaseState = await syncStateItem.getValue();
+        const joinedTrustedDomains = joinedBaseState.trustedDomains ?? [];
+        const joinedPageState =
+          message.targetPage != null
+            ? createGuestTargetPageState(
+                joinedBaseState,
+                message.targetPage,
+                'join',
+                activeTabUrl,
+                joinedTrustedDomains,
+              )
+            : {
+                targetPage: joinedBaseState.targetPage ?? message.targetPage,
+                pendingFocusRequest: joinedBaseState.pendingFocusRequest,
+                openInCurrentTab: false,
+              };
 
         await patchSyncState((state) =>
           addActivity(
             {
               ...state,
               peerCount: message.peerCount,
-              targetPage: state.targetPage ?? message.targetPage,
-              followHost: state.roomRole === 'guest' ? state.followHost : true,
+              targetPage: joinedPageState.targetPage,
+              pendingFocusRequest: joinedPageState.pendingFocusRequest,
+              followHost:
+                state.roomRole === 'guest'
+                  ? joinedPageState.openInCurrentTab
+                    ? true
+                    : state.followHost
+                  : true,
+              detachedReason: joinedPageState.openInCurrentTab ? null : state.detachedReason,
+              status: resolveInRoomSyncStatus(state, state.transportStatus),
             },
             `Connected to ${message.roomCode}`,
             'success',
           ),
         );
+
+        await applyGuestTargetPageResolution(
+          joinedPageState,
+          activeTab?.id,
+          joinedTrustedDomains,
+        );
+
+        const joinedState = await syncStateItem.getValue();
+        if (
+          joinedState.roomRole === 'guest' &&
+          joinedState.targetPage &&
+          !joinedState.pendingFocusRequest &&
+          activeTabUrl &&
+          isRoomTargetUrl(joinedState.targetPage, activeTabUrl)
+        ) {
+          await syncGuestWithHost(activeTabUrl);
+        }
         break;
+      }
       case 'presence':
         await patchSyncState((state) => ({
           ...state,
           peerCount: message.peerCount,
         }));
         break;
-      case 'room:update':
-        await ensureTargetPageTab(message.targetPage);
+      case 'room:update': {
+        const [activeTab] = await browser.tabs.query({
+          active: true,
+          currentWindow: true,
+        });
+        const activeTabUrl = activeTab?.url;
+        const updateBaseState = await syncStateItem.getValue();
+        const updateTrustedDomains = updateBaseState.trustedDomains ?? [];
+        const updatePageState = createGuestTargetPageState(
+          updateBaseState,
+          message.targetPage,
+          'focus',
+          activeTabUrl,
+          updateTrustedDomains,
+        );
 
         await patchSyncState((state) =>
           addActivity(
             {
               ...state,
-              targetPage: message.targetPage,
-              overlayVisible: true,
+              targetPage: updatePageState.targetPage,
+              pendingFocusRequest: updatePageState.pendingFocusRequest,
+              ...(updatePageState.openInCurrentTab
+                ? { followHost: true, detachedReason: null }
+                : {}),
             },
-            `Room page received: ${message.targetPage.hostname || message.targetPage.title}`,
+            updatePageState.openInCurrentTab
+              ? `Room page received in current tab: ${message.targetPage.hostname || message.targetPage.title}`
+              : `Room page received: ${message.targetPage.hostname || message.targetPage.title}`,
             'success',
           ),
         );
+
+        await applyGuestTargetPageResolution(
+          updatePageState,
+          activeTab?.id,
+          updateTrustedDomains,
+        );
         break;
-      case 'room:focus':
+      }
+      case 'room:focus': {
+        const [activeTab] = await browser.tabs.query({
+          active: true,
+          currentWindow: true,
+        });
+        const activeTabUrl = activeTab?.url;
+        const focusBaseState = await syncStateItem.getValue();
+        const focusTrustedDomains = focusBaseState.trustedDomains ?? [];
+
+        if (focusBaseState.roomRole === 'host') {
+          await patchSyncState((state) =>
+            addActivity(
+              state,
+              `Host focused: ${message.targetPage.hostname || message.targetPage.title}`,
+              'info',
+            ),
+          );
+          break;
+        }
+
+        const focusPageState = createGuestTargetPageState(
+          focusBaseState,
+          message.targetPage,
+          'focus',
+          activeTabUrl,
+          focusTrustedDomains,
+        );
+
         await patchSyncState((state) =>
           addActivity(
             {
               ...state,
-              overlayVisible: true,
-              pendingFocusRequest:
-                state.roomRole === 'host'
-                  ? null
-                  : {
-                      id: `${message.roomCode}-${message.targetPage.createdAt}`,
-                      targetPage: message.targetPage,
-                      requestedAt: Date.now(),
-                    },
+              targetPage: focusPageState.targetPage,
+              pendingFocusRequest: focusPageState.pendingFocusRequest,
+              ...(focusPageState.openInCurrentTab
+                ? { followHost: true, detachedReason: null }
+                : {}),
             },
-            `Host focused: ${message.targetPage.hostname || message.targetPage.title}`,
+            focusPageState.openInCurrentTab
+              ? `Host focused in current tab: ${message.targetPage.hostname || message.targetPage.title}`
+              : `Host focused: ${message.targetPage.hostname || message.targetPage.title}`,
             'info',
           ),
         );
+
+        await applyGuestTargetPageResolution(
+          focusPageState,
+          activeTab?.id,
+          focusTrustedDomains,
+        );
         break;
+      }
       case 'media:update':
         const shouldApplyMedia =
           activeState.roomRole !== 'guest' || activeState.followHost;
@@ -575,6 +674,92 @@ export default defineBackground(() => {
     );
   };
 
+  const syncGuestWithHost = async (tabUrl?: string) => {
+    const latestState = await syncStateItem.getValue();
+    if (latestState.roomRole !== 'guest') return;
+    if (!latestState.targetPage) return;
+    if (tabUrl && !isRoomTargetUrl(latestState.targetPage, tabUrl)) return;
+
+    if (!latestState.followHost || latestState.detachedReason) {
+      await patchSyncState((state) => ({
+        ...state,
+        followHost: true,
+        detachedReason: null,
+      }));
+    }
+
+    const state = await syncStateItem.getValue();
+    if (state.roomMedia) {
+      await applyRemoteMediaState(state.roomMedia);
+    }
+    requestHostMediaState(state);
+  };
+
+  const applyGuestTargetPageResolution = async (
+    pageState: GuestTargetPageResolution,
+    activeTabId: number | undefined,
+    trustedDomains: string[],
+  ) => {
+    if (!pageState.openInCurrentTab || !pageState.targetPage) return;
+
+    const tabId = await resolveTrustedOpenTabId(
+      pageState.targetPage,
+      trustedDomains,
+      activeTabId,
+    );
+
+    await openRoomTargetPage(
+      pageState.targetPage,
+      'current',
+      trustedDomains,
+      tabId,
+    );
+    queueGuestPageSync(pageState.targetPage);
+  };
+
+  const queueGuestPageSync = (targetPage: RoomTargetPage) => {
+    pendingGuestSyncUrls.add(normalizeSyncUrl(targetPage.url));
+
+    Promise.all([browser.tabs.query({}), tabStateItem.getValue()])
+      .then(([tabs, tabStates]) => {
+        for (const tab of tabs) {
+          if (!tab.url || !isRoomTargetUrl(targetPage, tab.url)) continue;
+
+          const tabState = tabStates[String(tab.id)];
+          if (tabState?.documentState !== 'complete') continue;
+
+          handleGuestTargetPageReady(tab.url, tabState).catch(console.error);
+          break;
+        }
+      })
+      .catch(console.error);
+  };
+
+  const handleGuestTargetPageReady = async (
+    tabUrl: string | undefined,
+    snapshot: ContentPageSnapshot,
+  ) => {
+    if (!tabUrl || snapshot.documentState !== 'complete') return;
+    if (!pendingGuestSyncUrls.delete(normalizeSyncUrl(tabUrl))) return;
+
+    await syncGuestWithHost(tabUrl);
+  };
+
+  const maybeQueueGuestSyncAfterFocus = (previousState: SyncState | null, state: SyncState) => {
+    if (state.roomRole !== 'guest' || !state.targetPage) return;
+    if (!previousState?.pendingFocusRequest || state.pendingFocusRequest) return;
+
+    queueGuestPageSync(state.targetPage);
+
+    if (!state.followHost || state.detachedReason) {
+      patchSyncState((current) => ({
+        ...current,
+        followHost: true,
+        detachedReason: null,
+      })).catch(console.error);
+    }
+  };
+
   const handleLocalMediaState = async (
     tabId: number,
     tabUrl: string | undefined,
@@ -648,6 +833,7 @@ export default defineBackground(() => {
       ...current,
       transportStatus: 'connecting',
       lastTransportError: null,
+      status: resolveInRoomSyncStatus(current, 'connecting'),
     })).catch(console.error);
 
     try {
@@ -690,6 +876,7 @@ export default defineBackground(() => {
             transportStatus: 'online',
             connectedAt: Date.now(),
             lastTransportError: null,
+            status: resolveInRoomSyncStatus(current, 'online'),
           },
           `Connected to ${state.serverUrl}`,
           'success',
@@ -797,26 +984,78 @@ export default defineBackground(() => {
       (!previousState ||
         !previousState.followHost ||
         previousState.roomCode !== state.roomCode ||
-        previousState.clientId !== state.clientId)
+        previousState.clientId !== state.clientId ||
+        previousState.targetPage?.normalizedUrl !== state.targetPage?.normalizedUrl)
     ) {
       requestHostMediaState(state);
+      if (state.roomMedia) {
+        applyRemoteMediaState(state.roomMedia).catch(console.error);
+      }
     }
   };
 
   refreshBadge().catch(console.error);
 
-  syncStateItem.getValue().then(reconcileTransport).catch(console.error);
+  syncStateItem.getValue().then((state) => {
+    reconcileTransport(state);
+    broadcastSyncState(state);
+  }).catch(console.error);
 
   syncStateItem.watch((state) => {
+    maybeQueueGuestSyncAfterFocus(previousWatchState, state);
+    previousWatchState = state;
     refreshBadge().catch(console.error);
     reconcileTransport(state);
+    broadcastSyncState(state);
   });
 
-  browser.runtime.onMessage.addListener((message, sender) => {
+  browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type === 'bsync:get-state') {
+      return syncStateItem.getValue().then((state) => ({
+        type: 'bsync:state-sync',
+        payload: resolveSyncState(state),
+      } satisfies BsyncStateSyncMessage));
+    }
+
+    if (message?.type === 'bsync:set-state' && sender.tab?.id != null) {
+      return syncStateItem
+        .setValue(resolveSyncState(message.payload))
+        .then(async () => {
+          const state = resolveSyncState(await syncStateItem.getValue());
+          return {
+            type: 'bsync:state-sync',
+            payload: state,
+          } satisfies BsyncStateSyncMessage;
+        })
+        .catch((error) => {
+          console.error(error);
+          return undefined;
+        });
+    }
+
+    if (message?.type === 'bsync:content-ready' && sender.tab?.id != null) {
+      void syncStateItem.getValue().then((state) => {
+        browser.tabs
+          .sendMessage(sender.tab!.id!, {
+            type: 'bsync:state-sync',
+            payload: resolveSyncState(state),
+          } satisfies BsyncStateSyncMessage)
+          .catch(() => undefined);
+      });
+      return;
+    }
+
     if (!isBsyncRuntimeMessage(message) || sender.tab?.id == null) return;
 
     if (message.type === 'bsync:tab-page') {
-      updateTabState(sender.tab.id, message.payload).catch(console.error);
+      updateTabState(sender.tab.id, message.payload)
+        .then(() => handleGuestTargetPageReady(sender.tab?.url, message.payload))
+        .catch(console.error);
+      return;
+    }
+
+    if (message.type === 'bsync:guest-sync') {
+      syncGuestWithHost(sender.tab?.url).catch(console.error);
       return;
     }
 
@@ -861,27 +1100,38 @@ export default defineBackground(() => {
     }
 
     if (message.type === 'bsync:focus-open') {
-      const { mode, targetPage } = message.payload;
+      void (async () => {
+        const latestState = await syncStateItem.getValue();
+        const { mode, targetPage, trustSite } = message.payload;
+        const trustedDomains = trustSite
+          ? addTrustedDomain(
+              latestState.trustedDomains ?? [],
+              targetPage.hostname || targetPage.url,
+            )
+          : (latestState.trustedDomains ?? []);
 
-      if (mode === 'new') {
-        browser.tabs
-          .create({
-            url: targetPage.url,
-            active: true,
-          })
-          .catch(console.error);
-      } else if (sender.tab.id != null) {
-        browser.tabs
-          .update(sender.tab.id, {
-            url: targetPage.url,
-            active: true,
-          })
-          .catch(console.error);
-      }
+        queueGuestPageSync(targetPage);
+        await openRoomTargetPage(
+          targetPage,
+          mode,
+          trustedDomains,
+          sender.tab?.id,
+        );
+      })().catch(console.error);
     }
   });
 
   browser.tabs.onRemoved.addListener((tabId) => {
     removeTabState(tabId).catch(console.error);
+  });
+
+  browser.tabs.onActivated.addListener(({ tabId }) => {
+    syncTabStateFromBrowser(tabId).catch(console.error);
+  });
+
+  browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo.url || changeInfo.title || changeInfo.status === 'complete') {
+      syncTabStateFromBrowser(tabId).catch(console.error);
+    }
   });
 });
