@@ -8,6 +8,7 @@ import {
     getFocusRequestTitle,
     getRoomTargetLabel,
     getTabPageLabel,
+    leaveRoomState,
     normalizeRoomCode,
     openRoomTargetPage,
     resetExtensionData,
@@ -288,24 +289,7 @@ function App() {
 
   const leaveRoom = async () => {
     await commit(
-      (current) => ({
-        ...current,
-        transportEnabled: false,
-        transportStatus: 'offline',
-        connectedAt: null,
-        peerCount: 1,
-        roomRole: 'none',
-        followHost: true,
-        detachedReason: null,
-        roomCode: '000000',
-        targetPage: null,
-        pendingFocusRequest: null,
-        status: 'idle',
-        progressPercent: 0,
-        roomMedia: null,
-        lastSyncedAt: null,
-        lastTransportError: null,
-      }),
+      leaveRoomState,
       'Left room',
       'warning',
     );
@@ -436,12 +420,16 @@ function App() {
           onClick={() =>
             commit(
               (current) => ({
-                ...current,
+                ...(current.enabled ? leaveRoomState(current) : current),
                 enabled: !current.enabled,
                 overlayVisible: !current.enabled ? true : current.overlayVisible,
                 status: !current.enabled ? 'idle' : 'paused',
               }),
-              state.enabled ? 'Extension paused' : 'Extension enabled',
+              state.enabled
+                ? isInRoom
+                  ? 'Extension disabled and room left'
+                  : 'Extension paused'
+                : 'Extension enabled',
               state.enabled ? 'warning' : 'success',
             )
           }

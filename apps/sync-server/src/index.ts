@@ -87,7 +87,27 @@ function leaveRoom(ws: ServerWebSocket) {
   if (!room) return;
   if (room.clients.get(clientId) !== ws) return;
 
+  const wasHost = room.hostClientId === clientId;
   room.clients.delete(clientId);
+  ws.data.roomCode = null;
+  ws.data.clientId = null;
+  ws.data.displayName = null;
+
+  if (wasHost) {
+    for (const peer of room.clients.values()) {
+      send(peer, {
+        type: 'room:closed',
+        roomCode,
+        reason: 'Host left the room',
+      });
+      peer.data.roomCode = null;
+      peer.data.clientId = null;
+      peer.data.displayName = null;
+    }
+    rooms.delete(roomCode);
+    return;
+  }
+
   if (room.clients.size === 0) {
     rooms.delete(roomCode);
     return;

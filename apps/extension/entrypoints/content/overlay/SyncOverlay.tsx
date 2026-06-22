@@ -27,6 +27,10 @@ const USER_INTENT_WINDOW_MS = 2500;
 const DETACH_COOLDOWN_MS = 1200;
 const SEEK_DETACH_SECONDS = 0.75;
 
+function getTargetWatchKey(state: SyncState | null): string {
+  return `${state?.targetPage?.normalizedUrl ?? 'none'}|${state?.targetPage?.createdAt ?? 0}`;
+}
+
 function isTopFrame(): boolean {
   return window.self === window.top;
 }
@@ -113,10 +117,17 @@ export function SyncOverlay() {
   const lastPublishedMediaKeyRef = useRef('');
   const guestMediaReadySentRef = useRef(false);
   const onDragEndRef = useRef<(event: PointerEvent) => void>(() => {});
+  const roomTargetSeenInThisTabRef = useRef('');
 
   const pageUrl = currentPageUrl;
   const isActiveRoomPage = state != null && isRoomBoundPage(state, pageUrl);
   const shouldRenderOverlay = state != null && shouldShowOverlayOnPage(state, pageUrl);
+  const targetWatchKey = getTargetWatchKey(state);
+  const shouldScanMedia =
+    isActiveRoomPage ||
+    (state?.roomRole === 'host' &&
+      state.autoSwitchHostContent &&
+      roomTargetSeenInThisTabRef.current === targetWatchKey);
 
   useEffect(() => {
     const syncPageUrl = () => setCurrentPageUrl(location.href);
@@ -204,11 +215,26 @@ export function SyncOverlay() {
   }, [state?.targetPage?.normalizedUrl, state?.targetPage?.createdAt, state?.roomRole]);
 
   useEffect(() => {
-    if (!isActiveRoomPage) return;
+    if (isActiveRoomPage) {
+      roomTargetSeenInThisTabRef.current = targetWatchKey;
+    }
+  }, [isActiveRoomPage, targetWatchKey]);
+
+  useEffect(() => {
+    if (!shouldScanMedia) return;
 
     const publishMediaState = () => {
       const latestState = stateRef.current;
-      if (!latestState || !isRoomBoundPage(latestState, location.href)) return;
+      if (!latestState) return;
+
+      const latestTargetWatchKey = getTargetWatchKey(latestState);
+      const isBoundPage = isRoomBoundPage(latestState, location.href);
+      const canAutoSwitchHostContent =
+        latestState.roomRole === 'host' &&
+        latestState.autoSwitchHostContent &&
+        roomTargetSeenInThisTabRef.current === latestTargetWatchKey;
+
+      if (!isBoundPage && !canAutoSwitchHostContent) return;
 
       const media = getPrimaryMediaElement();
       if (!media) {
@@ -406,7 +432,16 @@ export function SyncOverlay() {
       document.removeEventListener('touchstart', markUserIntent, true);
       document.removeEventListener('touchend', checkUserDrivenTimeShift, true);
     };
-  }, [currentPageUrl, isActiveRoomPage, state?.targetPage?.normalizedUrl, state?.roomRole, state?.transportEnabled]);
+  }, [
+    currentPageUrl,
+    isActiveRoomPage,
+    shouldScanMedia,
+    state?.autoSwitchHostContent,
+    state?.roomRole,
+    state?.targetPage?.normalizedUrl,
+    state?.transportEnabled,
+    targetWatchKey,
+  ]);
 
   useEffect(() => {
     if (!isTopFrame() || !isActiveRoomPage) return;

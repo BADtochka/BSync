@@ -79,6 +79,12 @@ export type BsyncWsServerMessage =
       sentAt: number;
     }
   | {
+      type: 'room:closed';
+      roomCode: string;
+      reason: string;
+      sentAt: number;
+    }
+  | {
       type: 'room:update';
       roomCode: string;
       clientId: string;

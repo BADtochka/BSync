@@ -2,11 +2,13 @@ import {
   addActivity,
   addTrustedDomain,
   createGuestTargetPageState,
+  createRoomTargetPage,
   createTabSnapshotFromBrowserTab,
   ensureBrowserSessionScopedRoomState,
   isBsyncRuntimeMessage,
   isBsyncWsServerMessage,
   isRoomTargetUrl,
+  leaveRoomState,
   normalizeSyncUrl,
   openRoomTargetPage,
   resetRoomSessionForBrowserStartup,
@@ -77,6 +79,26 @@ async function removeTabState(tabId: number) {
   const next = { ...tabStates };
   delete next[key];
   await tabStateItem.setValue(next);
+}
+
+async function handleTabRemoved(tabId: number) {
+  const tabStates = await tabStateItem.getValue();
+  const removedTabState = tabStates[String(tabId)];
+
+  await removeTabState(tabId);
+  if (!removedTabState?.url) return;
+
+  const state = await syncStateItem.getValue();
+  if (state.roomRole === 'none' || !state.targetPage) return;
+  if (!isRoomTargetUrl(state.targetPage, removedTabState.url)) return;
+
+  await syncStateItem.setValue(
+    addActivity(
+      leaveRoomState(state),
+      state.roomRole === 'host' ? 'Host room tab closed' : 'Room tab closed',
+      'warning',
+    ),
+  );
 }
 
 function getMediaProgressPercent(media: MediaSyncState): number {
@@ -323,6 +345,35 @@ export default defineBackground(() => {
     );
   };
 
+  const createRoomTargetPageFromTab = async (
+    tabId: number,
+    pageUrl: string,
+  ): Promise<RoomTargetPage | null> => {
+    try {
+      const tab = await browser.tabs.get(tabId);
+      const snapshot = createTabSnapshotFromBrowserTab({
+        ...tab,
+        url: pageUrl,
+      });
+      if (snapshot) return createRoomTargetPage(snapshot);
+    } catch {
+      // Tab may disappear or no longer expose a readable URL.
+    }
+
+    try {
+      const parsed = new URL(pageUrl);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+
+      return createRoomTargetPage({
+        title: parsed.hostname,
+        url: pageUrl,
+        hostname: parsed.hostname,
+      });
+    } catch {
+      return null;
+    }
+  };
+
   const publishCurrentState = (state: SyncState) => {
     if (socket?.readyState !== WebSocket.OPEN) return;
     publishJoin(state);
@@ -464,6 +515,15 @@ export default defineBackground(() => {
           ...state,
           peerCount: message.peerCount,
         }));
+        break;
+      case 'room:closed':
+        await patchSyncState((state) =>
+          addActivity(
+            leaveRoomState(state),
+            message.reason || 'Room closed',
+            'warning',
+          ),
+        );
         break;
       case 'room:update': {
         const [activeTab] = await browser.tabs.query({
@@ -769,20 +829,46 @@ export default defineBackground(() => {
     activeState = latestState;
 
     const pageUrl = tabUrl || media.url;
-    if (!latestState.targetPage || !isRoomTargetUrl(latestState.targetPage, pageUrl)) return;
     if (latestState.roomRole !== 'host') return;
 
-    const nextStatus = media.paused ? 'paused' : 'synced';
-    await patchSyncState((state) => ({
-      ...state,
-      status: nextStatus,
-      progressPercent: getMediaProgressPercent(media),
-      roomMedia: media,
-      lastSyncedAt: Date.now(),
-    }));
+    const isCurrentTargetPage =
+      latestState.targetPage != null && isRoomTargetUrl(latestState.targetPage, pageUrl);
+    if (!isCurrentTargetPage && !latestState.autoSwitchHostContent) return;
 
-    if (latestState.transportEnabled && latestState.transportStatus === 'online') {
-      publishMediaState(latestState, media);
+    const nextStatus = media.paused ? 'paused' : 'synced';
+
+    let stateForPublish: SyncState;
+    if (isCurrentTargetPage) {
+      stateForPublish = await patchSyncState((state) => ({
+        ...state,
+        status: nextStatus,
+        progressPercent: getMediaProgressPercent(media),
+        roomMedia: media,
+        lastSyncedAt: Date.now(),
+      }));
+    } else {
+      const nextTargetPage = await createRoomTargetPageFromTab(tabId, pageUrl);
+      if (!nextTargetPage) return;
+
+      stateForPublish = await patchSyncState((state) =>
+        addActivity(
+          {
+            ...state,
+            targetPage: nextTargetPage,
+            pendingFocusRequest: null,
+            status: nextStatus,
+            progressPercent: getMediaProgressPercent(media),
+            roomMedia: media,
+            lastSyncedAt: Date.now(),
+          },
+          `Host content switched: ${nextTargetPage.hostname || nextTargetPage.title}`,
+          'success',
+        ),
+      );
+    }
+
+    if (stateForPublish.transportEnabled && stateForPublish.transportStatus === 'online') {
+      publishMediaState(stateForPublish, media);
     }
   };
 
@@ -1122,7 +1208,7 @@ export default defineBackground(() => {
   });
 
   browser.tabs.onRemoved.addListener((tabId) => {
-    removeTabState(tabId).catch(console.error);
+    handleTabRemoved(tabId).catch(console.error);
   });
 
   browser.tabs.onActivated.addListener(({ tabId }) => {

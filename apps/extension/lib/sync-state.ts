@@ -37,6 +37,7 @@ export interface SyncPreferences {
   displayName: string;
   clientId: string;
   trustedDomains: string[];
+  autoSwitchHostContent: boolean;
 }
 
 export interface RoomSessionState {
@@ -160,6 +161,7 @@ export const DEFAULT_SYNC_PREFERENCES: SyncPreferences = {
   displayName: 'Browser',
   clientId: `client-${Math.random().toString(36).slice(2, 10)}`,
   trustedDomains: [],
+  autoSwitchHostContent: true,
 };
 
 export const DEFAULT_ROOM_SESSION: RoomSessionState = {
@@ -209,6 +211,8 @@ function extractPreferences(state: SyncState): SyncPreferences {
     displayName: state.displayName,
     clientId: state.clientId,
     trustedDomains: state.trustedDomains ?? DEFAULT_SYNC_PREFERENCES.trustedDomains,
+    autoSwitchHostContent:
+      state.autoSwitchHostContent ?? DEFAULT_SYNC_PREFERENCES.autoSwitchHostContent,
   };
 }
 
@@ -216,6 +220,27 @@ export function clearRoomSession(state: SyncState): SyncState {
   return {
     ...state,
     ...DEFAULT_ROOM_SESSION,
+  };
+}
+
+export function leaveRoomState(state: SyncState): SyncState {
+  return {
+    ...state,
+    transportEnabled: false,
+    transportStatus: 'offline',
+    connectedAt: null,
+    peerCount: 1,
+    roomRole: 'none',
+    followHost: true,
+    detachedReason: null,
+    roomCode: '000000',
+    targetPage: null,
+    pendingFocusRequest: null,
+    status: 'idle',
+    progressPercent: 0,
+    roomMedia: null,
+    lastSyncedAt: null,
+    lastTransportError: null,
   };
 }
 
@@ -402,6 +427,8 @@ export function resolveSyncState(state: SyncState | null | undefined): SyncState
     ...DEFAULT_SYNC_STATE,
     ...state,
     trustedDomains: state.trustedDomains ?? DEFAULT_SYNC_STATE.trustedDomains,
+    autoSwitchHostContent:
+      state.autoSwitchHostContent ?? DEFAULT_SYNC_STATE.autoSwitchHostContent,
     activity: state.activity ?? DEFAULT_SYNC_STATE.activity,
   };
 }
@@ -726,9 +753,9 @@ export function normalizeTrustedDomain(input: string): string | null {
 
   try {
     const withProtocol = trimmed.includes('://') ? trimmed : `https://${trimmed}`;
-    return new URL(withProtocol).hostname.replace(/^www\./, '');
+    return new URL(withProtocol).hostname;
   } catch {
-    const hostname = trimmed.replace(/^www\./, '').split('/')[0]?.split(':')[0];
+    const hostname = trimmed.split('/')[0]?.split(':')[0];
     return hostname || null;
   }
 }
@@ -759,14 +786,12 @@ export function addTrustedDomain(trustedDomains: string[], hostnameOrUrl: string
 }
 
 export function isTrustedHostname(hostname: string, trustedDomains: string[]): boolean {
-  const normalizedHost = hostname.toLowerCase().replace(/^www\./, '');
+  const normalizedHost = hostname.toLowerCase();
   if (!normalizedHost) return false;
 
   return trustedDomains.some((domain) => {
-    const normalizedDomain = domain.toLowerCase().replace(/^www\./, '');
-    return (
-      normalizedHost === normalizedDomain || normalizedHost.endsWith(`.${normalizedDomain}`)
-    );
+    const normalizedDomain = normalizeTrustedDomain(domain);
+    return normalizedDomain != null && normalizedHost === normalizedDomain;
   });
 }
 

@@ -616,6 +616,18 @@
   gap: 8px;
 }
 
+.field-row--wide > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.field-row--wide small {
+  color: #74848c;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .button-row button {
   flex: 1;
 }

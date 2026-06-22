@@ -176,6 +176,33 @@ export function SettingsPanel({ state, onBack, onCommit, onResetData }: Settings
       </div>
 
       <div className='settings-group'>
+        <span className='settings-label'>Sync</span>
+        <div className='field-row field-row--wide'>
+          <div>
+            <span>Auto-switch host content</span>
+            <small>When the host tab URL changes and media is found, update the room page automatically.</small>
+          </div>
+          <button
+            type='button'
+            className={state.autoSwitchHostContent ? 'toggle is-on' : 'toggle'}
+            onClick={() =>
+              onCommit(
+                (current) => ({
+                  ...current,
+                  autoSwitchHostContent: !current.autoSwitchHostContent,
+                }),
+                state.autoSwitchHostContent
+                  ? 'Host auto-switch disabled'
+                  : 'Host auto-switch enabled',
+              )
+            }
+          >
+            {state.autoSwitchHostContent ? 'On' : 'Off'}
+          </button>
+        </div>
+      </div>
+
+      <div className='settings-group'>
         <div className='settings-field'>
           <span>Trusted domains</span>
           <small>
