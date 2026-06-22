@@ -6,6 +6,16 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
+      bump:
+        description: Version bump
+        required: true
+        default: none
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - none
       channel:
         description: Firefox Add-ons channel
         required: true
@@ -21,7 +31,7 @@ on:
         type: boolean
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: firefox-addons-${{ github.ref }}
@@ -39,6 +49,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -70,6 +82,29 @@ jobs:
 
           exit "$missing"
 
+      - name: Bump extension version
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        id: version
+        shell: bash
+        run: |
+          version="$(bun run version:extension -- "${{ inputs.bump }}")"
+          bun install --lockfile-only
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check release tag
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false && inputs.bump != 'none' }}
+        shell: bash
+        run: |
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.version.outputs.tag }} already exists." >&2
+            exit 1
+          fi
+
+      - name: Compile
+        run: bun run compile
+
       - name: Build Firefox extension zip
         run: bun run zip:firefox
 
@@ -98,3 +133,14 @@ jobs:
           fi
 
           bunx wxt submit "${args[@]}"
+
+      - name: Commit version bump
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false && inputs.bump != 'none' }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/extension/package.json bun.lock
+          git commit -m "chore(extension): release ${{ steps.version.outputs.tag }}"
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin HEAD:${{ github.ref_name }} "${{ steps.version.outputs.tag }}"

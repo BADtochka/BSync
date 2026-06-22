@@ -1,3 +1,4 @@
+import { createSign } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 
@@ -19,10 +20,23 @@ type ApiResponse = {
   };
 };
 
+type ServiceAccountKey = {
+  client_email: string;
+  private_key: string;
+};
+
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required.`);
   return value;
+}
+
+function base64UrlEncode(input: string | Buffer): string {
+  return Buffer.from(input)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
 }
 
 async function readJsonResponse(response: Response): Promise<ApiResponse | TokenResponse> {
@@ -49,26 +63,57 @@ function assertOk(response: Response, payload: ApiResponse | TokenResponse, acti
   throw new Error(`${action} failed with HTTP ${response.status}: ${details}`);
 }
 
-async function getAccessToken(): Promise<string> {
-  const body = new URLSearchParams({
-    client_id: requireEnv('CHROME_CLIENT_ID'),
-    client_secret: requireEnv('CHROME_CLIENT_SECRET'),
-    refresh_token: requireEnv('CHROME_REFRESH_TOKEN'),
-    grant_type: 'refresh_token',
-  });
+async function getServiceAccountAccessToken(key: ServiceAccountKey): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64UrlEncode(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const claimSet = base64UrlEncode(
+    JSON.stringify({
+      iss: key.client_email,
+      scope: 'https://www.googleapis.com/auth/chromewebstore',
+      aud: 'https://oauth2.googleapis.com/token',
+      exp: now + 3600,
+      iat: now,
+    }),
+  );
+  const unsignedToken = `${header}.${claimSet}`;
+  const sign = createSign('RSA-SHA256');
+  sign.update(unsignedToken);
+  sign.end();
+  const jwt = `${unsignedToken}.${base64UrlEncode(sign.sign(key.private_key))}`;
 
   const response = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
-    body,
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: jwt,
+    }),
   });
   const payload = (await readJsonResponse(response)) as TokenResponse;
-  assertOk(response, payload, 'Refreshing Chrome Web Store access token');
+  assertOk(response, payload, 'Requesting Chrome Web Store access token from service account');
 
   if (!payload.access_token) {
-    throw new Error('Chrome Web Store token response did not include access_token.');
+    throw new Error('Service account token response did not include access_token.');
   }
 
   return payload.access_token;
+}
+
+async function getAccessToken(): Promise<string> {
+  const directToken = process.env.CHROME_ACCESS_TOKEN;
+  if (directToken) return directToken;
+
+  const keyJson = process.env.CHROME_SERVICE_ACCOUNT_KEY;
+  if (keyJson) {
+    const key = JSON.parse(keyJson) as ServiceAccountKey;
+    if (!key.client_email || !key.private_key) {
+      throw new Error('CHROME_SERVICE_ACCOUNT_KEY must include client_email and private_key.');
+    }
+
+    return getServiceAccountAccessToken(key);
+  }
+
+  throw new Error('CHROME_ACCESS_TOKEN or CHROME_SERVICE_ACCOUNT_KEY is required.');
 }
 
 async function main() {
