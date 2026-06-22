@@ -15,6 +15,8 @@
     "build:firefox": "bun run --cwd apps/extension build:firefox",
     "zip": "bun run --cwd apps/extension zip",
     "zip:firefox": "bun run --cwd apps/extension zip:firefox",
+    "version:extension": "bun scripts/bump-extension-version.ts",
+    "publish:chrome": "bun scripts/publish-chrome-webstore.ts",
     "sync-server": "bun run --cwd apps/sync-server start",
     "sync-server:dev": "bun run --cwd apps/sync-server dev",
     "compile": "bun run --cwd packages/sync-protocol compile && bun run --cwd apps/extension compile && bun run --cwd apps/sync-server compile",

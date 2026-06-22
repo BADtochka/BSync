@@ -1,0 +1,135 @@
+name: Publish Chrome Web Store
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - none
+      publish:
+        description: Publish after upload
+        required: true
+        default: true
+        type: boolean
+      dry_run:
+        description: Validate workflow without uploading or committing
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chrome-webstore-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      CHROME_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID || secrets.CHROME_EXTENSION_ID }}
+      CHROME_PUBLISHER_ID: ${{ vars.CHROME_PUBLISHER_ID || secrets.CHROME_PUBLISHER_ID }}
+      CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+      CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+      CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+      CHROME_PUBLISH: ${{ inputs.publish }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Validate Chrome Web Store config
+        shell: bash
+        run: |
+          missing=0
+
+          for name in \
+            CHROME_EXTENSION_ID \
+            CHROME_PUBLISHER_ID
+          do
+            if [[ -z "${!name:-}" ]]; then
+              echo "$name is required. Add it as a repository variable or secret." >&2
+              missing=1
+            fi
+          done
+
+          if [[ "$DRY_RUN" != "true" ]]; then
+            for name in \
+              CHROME_CLIENT_ID \
+              CHROME_CLIENT_SECRET \
+              CHROME_REFRESH_TOKEN
+            do
+              if [[ -z "${!name:-}" ]]; then
+                echo "$name is required. Add it as a repository secret." >&2
+                missing=1
+              fi
+            done
+          fi
+
+          exit "$missing"
+
+      - name: Bump extension version
+        id: version
+        shell: bash
+        run: |
+          version="$(bun run version:extension -- "${{ inputs.bump }}")"
+          bun install --lockfile-only
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check release tag
+        if: ${{ inputs.dry_run == false && inputs.bump != 'none' }}
+        shell: bash
+        run: |
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.version.outputs.tag }} already exists." >&2
+            exit 1
+          fi
+
+      - name: Compile
+        run: bun run compile
+
+      - name: Build Chrome extension zip
+        run: bun run zip
+
+      - name: Publish to Chrome Web Store
+        shell: bash
+        run: |
+          chrome_zip="$(find apps/extension/.output -maxdepth 1 -name '*-chrome.zip' -print -quit)"
+
+          if [[ -z "$chrome_zip" ]]; then
+            echo "Chrome extension zip was not generated" >&2
+            exit 1
+          fi
+
+          bun run publish:chrome -- "$chrome_zip"
+
+      - name: Commit version bump
+        if: ${{ inputs.dry_run == false && inputs.bump != 'none' }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/extension/package.json bun.lock
+          git commit -m "chore(extension): release ${{ steps.version.outputs.tag }}"
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin HEAD:${{ github.ref_name }} "${{ steps.version.outputs.tag }}"

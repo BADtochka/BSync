@@ -28,9 +28,27 @@ bun run build
 bun run compile
 bun run dev:firefox
 bun run build:firefox
+bun run publish:chrome
 bun run sync-server
 ```
 
 Load the generated development extension from `apps/extension/.output/chrome-mv3-dev`.
 Firefox MV3 development builds are generated in `apps/extension/.output/firefox-mv3-dev`.
 The local sync relay listens on `ws://localhost:8787`.
+
+## Chrome Web Store release
+
+Run the `Publish Chrome Web Store` workflow manually. It can bump `apps/extension/package.json`,
+build the Chrome zip, upload it through the Chrome Web Store API, publish it, and push a matching
+`vX.Y.Z` tag.
+
+Required GitHub variables or secrets:
+
+- `CHROME_EXTENSION_ID`
+- `CHROME_PUBLISHER_ID`
+
+Required GitHub secrets:
+
+- `CHROME_CLIENT_ID`
+- `CHROME_CLIENT_SECRET`
+- `CHROME_REFRESH_TOKEN`
