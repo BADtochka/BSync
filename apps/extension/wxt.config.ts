@@ -26,7 +26,7 @@ export default defineConfig({
       ? {
           browser_specific_settings: {
             gecko: {
-              id: firefoxExtensionId ?? 'bsync@local.dev',
+              id: firefoxExtensionId ?? '@bsync',
               data_collection_permissions: {
                 required: ['none' as const],
               },
