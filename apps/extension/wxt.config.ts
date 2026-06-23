@@ -14,7 +14,7 @@ export default defineConfig({
   manifest: ({ browser }) => ({
     name: 'BSync',
     description: 'Interactive browser sync overlay built with WXT and Preact.',
-    permissions: ['storage', 'tabs'],
+    permissions: ['storage', 'tabs', 'webNavigation'],
     host_permissions: ['<all_urls>'],
     action: {
       default_title: 'BSync',

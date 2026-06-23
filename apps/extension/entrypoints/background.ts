@@ -71,6 +71,28 @@ async function syncTabStateFromBrowser(tabId: number) {
   }
 }
 
+async function sendMessageToAllTabFrames(tabId: number, message: unknown): Promise<void> {
+  if (browser.webNavigation?.getAllFrames) {
+    try {
+      const frames = await browser.webNavigation.getAllFrames({ tabId });
+      if (frames?.length) {
+        await Promise.all(
+          frames.map((frame) =>
+            browser.tabs
+              .sendMessage(tabId, message, { frameId: frame.frameId })
+              .catch(() => undefined),
+          ),
+        );
+        return;
+      }
+    } catch {
+      // Fall back to the top frame when frame enumeration is unavailable.
+    }
+  }
+
+  await browser.tabs.sendMessage(tabId, message).catch(() => undefined);
+}
+
 async function removeTabState(tabId: number) {
   const tabStates = await tabStateItem.getValue();
   const key = String(tabId);
@@ -156,12 +178,10 @@ export default defineBackground(() => {
         .then((tabs) => {
           for (const tab of tabs) {
             if (tab.id == null) continue;
-            browser.tabs
-              .sendMessage(tab.id, {
-                type: 'bsync:state-sync',
-                payload,
-              } satisfies BsyncStateSyncMessage)
-              .catch(() => undefined);
+            void sendMessageToAllTabFrames(tab.id, {
+              type: 'bsync:state-sync',
+              payload,
+            } satisfies BsyncStateSyncMessage);
           }
         })
         .catch(console.error);
@@ -714,12 +734,10 @@ export default defineBackground(() => {
           }, MEDIA_APPLY_ACK_TIMEOUT_MS),
         );
 
-        return browser.tabs
-          .sendMessage(tab.id, {
-            type: 'bsync:media-apply',
-            payload: media,
-          })
-          .catch((error) => {
+        return sendMessageToAllTabFrames(tab.id, {
+          type: 'bsync:media-apply',
+          payload: media,
+        }).catch((error) => {
             const timer = pendingMediaApplyTimers.get(applyKey);
             if (timer) clearTimeout(timer);
             pendingMediaApplyTimers.delete(applyKey);
@@ -1121,13 +1139,16 @@ export default defineBackground(() => {
 
     if (message?.type === 'bsync:content-ready' && sender.tab?.id != null) {
       void syncStateItem.getValue().then((state) => {
-        browser.tabs
-          .sendMessage(sender.tab!.id!, {
-            type: 'bsync:state-sync',
-            payload: resolveSyncState(state),
-          } satisfies BsyncStateSyncMessage)
-          .catch(() => undefined);
+        void sendMessageToAllTabFrames(sender.tab!.id!, {
+          type: 'bsync:state-sync',
+          payload: resolveSyncState(state),
+        } satisfies BsyncStateSyncMessage);
       });
+      return;
+    }
+
+    if (message?.type === 'bsync:frame-local-media' && sender.tab?.id != null) {
+      void sendMessageToAllTabFrames(sender.tab.id, message);
       return;
     }
 

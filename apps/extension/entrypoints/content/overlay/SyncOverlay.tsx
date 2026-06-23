@@ -3,13 +3,11 @@ import {
   addTrustedDomain,
   canonicalRoomPageUrl,
   isRoomBoundPage,
-  isRoomTargetUrl,
   resolveSyncState,
   shouldShowOverlayOnPage,
   subscribeSyncState,
   updateSyncState,
   getSyncState,
-  type BsyncContentMessage,
   type ContentPageSnapshot,
   type MediaSyncState,
   type SyncState,
@@ -17,19 +15,10 @@ import {
 import { OverlayDropGuides } from './OverlayDropGuides';
 import { OverlayPanel } from './OverlayPanel';
 import { getMediaDriftLabel } from './media';
+import { subscribeTopFrameLocalMedia } from './media-frame-sync';
 import { getOverlayPanelSize } from './geometry';
 import { useOverlayDrag } from './useOverlayDrag';
 import { useOverlaySnap } from './useOverlaySnap';
-
-const MEDIA_PUBLISH_EVENTS = ['play', 'pause', 'seeked', 'ratechange', 'loadedmetadata'];
-const MEDIA_CONTROL_EVENTS = ['play', 'pause', 'seeking', 'seeked', 'ratechange'];
-const USER_INTENT_WINDOW_MS = 2500;
-const DETACH_COOLDOWN_MS = 1200;
-const SEEK_DETACH_SECONDS = 0.75;
-
-function getTargetWatchKey(state: SyncState | null): string {
-  return `${state?.targetPage?.normalizedUrl ?? 'none'}|${state?.targetPage?.createdAt ?? 0}`;
-}
 
 function isTopFrame(): boolean {
   return window.self === window.top;
@@ -45,58 +34,6 @@ function getPageSnapshot(): ContentPageSnapshot {
   };
 }
 
-function getPrimaryMediaElement(): HTMLMediaElement | null {
-  const mediaElements = [...document.querySelectorAll<HTMLMediaElement>('video, audio')];
-  if (mediaElements.length === 0) return null;
-
-  return mediaElements.sort((left, right) => {
-    const leftDuration = Number.isFinite(left.duration) ? left.duration : 0;
-    const rightDuration = Number.isFinite(right.duration) ? right.duration : 0;
-    return rightDuration - leftDuration;
-  })[0] ?? null;
-}
-
-function getMediaId(media: HTMLMediaElement): string {
-  return media.id || media.currentSrc || media.getAttribute('src') || media.tagName.toLowerCase();
-}
-
-function getMediaState(media: HTMLMediaElement): MediaSyncState {
-  return {
-    url: location.href,
-    mediaId: getMediaId(media),
-    paused: media.paused,
-    currentTime: Number.isFinite(media.currentTime) ? media.currentTime : 0,
-    duration: Number.isFinite(media.duration) ? media.duration : null,
-    playbackRate: media.playbackRate || 1,
-    volume: media.volume,
-    muted: media.muted,
-    updatedAt: Date.now(),
-  };
-}
-
-function getMediaDriftSeconds(left: MediaSyncState, right: MediaSyncState): number {
-  return Math.round(Math.abs(left.currentTime - right.currentTime) * 10) / 10;
-}
-
-async function applyMediaState(media: HTMLMediaElement, remoteState: MediaSyncState) {
-  if (Number.isFinite(remoteState.playbackRate) && media.playbackRate !== remoteState.playbackRate) {
-    media.playbackRate = remoteState.playbackRate;
-  }
-
-  const driftSeconds = Math.abs(media.currentTime - remoteState.currentTime);
-  if (Number.isFinite(remoteState.currentTime) && driftSeconds > 0.75) {
-    media.currentTime = remoteState.currentTime;
-  }
-
-  if (remoteState.paused && !media.paused) {
-    media.pause();
-  }
-
-  if (!remoteState.paused && media.paused) {
-    await media.play().catch(() => undefined);
-  }
-}
-
 export function SyncOverlay() {
   const [state, setState] = useState<SyncState | null>(null);
   const [pageSnapshot, setPageSnapshot] = useState<ContentPageSnapshot>(() => getPageSnapshot());
@@ -109,25 +46,12 @@ export function SyncOverlay() {
     resolveSnapPosition: (_event: PointerEvent) => null as SyncState['position'] | null,
     resetSnap: () => {},
   });
-  const suppressMediaPublishUntilRef = useRef(0);
-  const userIntentUntilRef = useRef(0);
-  const userIntentMediaTimeRef = useRef<number | null>(null);
-  const lastDetachSentAtRef = useRef(0);
   const stateRef = useRef<SyncState | null>(null);
-  const lastPublishedMediaKeyRef = useRef('');
-  const guestMediaReadySentRef = useRef(false);
   const onDragEndRef = useRef<(event: PointerEvent) => void>(() => {});
-  const roomTargetSeenInThisTabRef = useRef('');
 
   const pageUrl = currentPageUrl;
   const isActiveRoomPage = state != null && isRoomBoundPage(state, pageUrl);
   const shouldRenderOverlay = state != null && shouldShowOverlayOnPage(state, pageUrl);
-  const targetWatchKey = getTargetWatchKey(state);
-  const shouldScanMedia =
-    isActiveRoomPage ||
-    (state?.roomRole === 'host' &&
-      state.autoSwitchHostContent &&
-      roomTargetSeenInThisTabRef.current === targetWatchKey);
 
   useEffect(() => {
     const syncPageUrl = () => setCurrentPageUrl(location.href);
@@ -211,237 +135,12 @@ export function SyncOverlay() {
   }, []);
 
   useEffect(() => {
+    return subscribeTopFrameLocalMedia(setLocalMediaState);
+  }, []);
+
+  useEffect(() => {
     setCurrentPageUrl(location.href);
   }, [state?.targetPage?.normalizedUrl, state?.targetPage?.createdAt, state?.roomRole]);
-
-  useEffect(() => {
-    if (isActiveRoomPage) {
-      roomTargetSeenInThisTabRef.current = targetWatchKey;
-    }
-  }, [isActiveRoomPage, targetWatchKey]);
-
-  useEffect(() => {
-    if (!shouldScanMedia) return;
-
-    const publishMediaState = () => {
-      const latestState = stateRef.current;
-      if (!latestState) return;
-
-      const latestTargetWatchKey = getTargetWatchKey(latestState);
-      const isBoundPage = isRoomBoundPage(latestState, location.href);
-      const canAutoSwitchHostContent =
-        latestState.roomRole === 'host' &&
-        latestState.autoSwitchHostContent &&
-        roomTargetSeenInThisTabRef.current === latestTargetWatchKey;
-
-      if (!isBoundPage && !canAutoSwitchHostContent) return;
-
-      const media = getPrimaryMediaElement();
-      if (!media) {
-        setLocalMediaState(null);
-        return;
-      }
-
-      const nextMediaState = getMediaState(media);
-      setLocalMediaState(nextMediaState);
-
-      if (latestState.roomRole !== 'host') return;
-      if (Date.now() < suppressMediaPublishUntilRef.current) return;
-
-      const publishKey = [
-        nextMediaState.paused,
-        Math.round(nextMediaState.currentTime),
-        nextMediaState.playbackRate,
-        nextMediaState.duration ?? 'live',
-      ].join('|');
-
-      if (publishKey === lastPublishedMediaKeyRef.current) return;
-      lastPublishedMediaKeyRef.current = publishKey;
-
-      browser.runtime
-        .sendMessage({
-          type: 'bsync:media-state',
-          payload: nextMediaState,
-        })
-        .catch(() => undefined);
-    };
-
-    const sendDetachFromHost = (reason: string, mediaElement?: HTMLMediaElement | null) => {
-      const latestState = stateRef.current;
-      if (!latestState || !isRoomBoundPage(latestState, location.href)) return;
-      if (latestState.roomRole !== 'guest' || !latestState.followHost) return;
-
-      const now = Date.now();
-      if (now - lastDetachSentAtRef.current < DETACH_COOLDOWN_MS) return;
-
-      const media = mediaElement ?? getPrimaryMediaElement();
-      if (!media) return;
-
-      lastDetachSentAtRef.current = now;
-      browser.runtime
-        .sendMessage({
-          type: 'bsync:media-detach',
-          payload: {
-            reason,
-            media: getMediaState(media),
-          },
-        })
-        .catch(() => undefined);
-    };
-
-    const detachFromHost = (eventName: string) => {
-      const now = Date.now();
-      const hasUserIntent = now <= userIntentUntilRef.current;
-      const isRemoteApply = now < suppressMediaPublishUntilRef.current;
-      const isSeekEvent = eventName === 'seeking' || eventName === 'seeked';
-
-      if (isRemoteApply) return;
-      if (!hasUserIntent && !isSeekEvent) return;
-      sendDetachFromHost(`Local ${eventName}`);
-    };
-
-    const checkUserDrivenTimeShift = () => {
-      if (Date.now() > userIntentUntilRef.current) return;
-      if (Date.now() < suppressMediaPublishUntilRef.current) return;
-
-      const initialTime = userIntentMediaTimeRef.current;
-      if (initialTime == null) return;
-
-      const media = getPrimaryMediaElement();
-      if (!media || !Number.isFinite(media.currentTime)) return;
-
-      if (Math.abs(media.currentTime - initialTime) < SEEK_DETACH_SECONDS) return;
-
-      sendDetachFromHost('Local seek', media);
-      userIntentMediaTimeRef.current = null;
-    };
-
-    const attachMediaListeners = () => {
-      const media = getPrimaryMediaElement();
-      if (!media) return;
-
-      for (const eventName of MEDIA_PUBLISH_EVENTS) {
-        media.addEventListener(eventName, publishMediaState);
-      }
-
-      const controlHandlers = MEDIA_CONTROL_EVENTS.map((eventName) => {
-        const handler = () => detachFromHost(eventName);
-        media.addEventListener(eventName, handler);
-        return { eventName, handler };
-      });
-
-      return () => {
-        for (const eventName of MEDIA_PUBLISH_EVENTS) {
-          media.removeEventListener(eventName, publishMediaState);
-        }
-        for (const { eventName, handler } of controlHandlers) {
-          media.removeEventListener(eventName, handler);
-        }
-      };
-    };
-
-    const markUserIntent = () => {
-      const now = Date.now();
-      const media = getPrimaryMediaElement();
-
-      if (now > userIntentUntilRef.current || userIntentMediaTimeRef.current == null) {
-        userIntentMediaTimeRef.current = media ? media.currentTime : null;
-      }
-
-      userIntentUntilRef.current = now + USER_INTENT_WINDOW_MS;
-      window.setTimeout(checkUserDrivenTimeShift, 250);
-      window.setTimeout(checkUserDrivenTimeShift, 900);
-    };
-
-    let cleanupMediaListeners = attachMediaListeners();
-    const mediaScanTimer = setInterval(() => {
-      cleanupMediaListeners?.();
-      cleanupMediaListeners = attachMediaListeners();
-      publishMediaState();
-    }, 1500);
-
-    const progressTimer = setInterval(publishMediaState, 1000);
-
-    const messageListener = (message: unknown) => {
-      const latestState = stateRef.current;
-      if (!latestState || !isRoomBoundPage(latestState, location.href)) return;
-
-      const candidate = message as BsyncContentMessage;
-      if (candidate?.type !== 'bsync:media-apply') return;
-
-      const media = getPrimaryMediaElement();
-      if (!media) {
-        browser.runtime
-          .sendMessage({
-            type: 'bsync:media-apply-failed',
-            payload: {
-              requested: candidate.payload,
-              reason: 'No media element on page',
-            },
-          })
-          .catch(() => undefined);
-        return;
-      }
-
-      const before = getMediaState(media);
-      suppressMediaPublishUntilRef.current = Date.now() + 1200;
-      applyMediaState(media, candidate.payload)
-        .then(() => {
-          const after = getMediaState(media);
-          return browser.runtime.sendMessage({
-            type: 'bsync:media-applied',
-            payload: {
-              requested: candidate.payload,
-              before,
-              after,
-              driftSeconds: getMediaDriftSeconds(candidate.payload, after),
-            },
-          });
-        })
-        .catch((error) => {
-          browser.runtime
-            .sendMessage({
-              type: 'bsync:media-apply-failed',
-              payload: {
-                requested: candidate.payload,
-                reason: error instanceof Error ? error.message : 'Media apply failed',
-              },
-            })
-            .catch(() => undefined);
-        });
-    };
-
-    browser.runtime.onMessage.addListener(messageListener);
-    document.addEventListener('pointerdown', markUserIntent, true);
-    document.addEventListener('pointerup', checkUserDrivenTimeShift, true);
-    document.addEventListener('keydown', markUserIntent, true);
-    document.addEventListener('keyup', checkUserDrivenTimeShift, true);
-    document.addEventListener('touchstart', markUserIntent, true);
-    document.addEventListener('touchend', checkUserDrivenTimeShift, true);
-    publishMediaState();
-
-    return () => {
-      cleanupMediaListeners?.();
-      clearInterval(mediaScanTimer);
-      clearInterval(progressTimer);
-      browser.runtime.onMessage.removeListener(messageListener);
-      document.removeEventListener('pointerdown', markUserIntent, true);
-      document.removeEventListener('pointerup', checkUserDrivenTimeShift, true);
-      document.removeEventListener('keydown', markUserIntent, true);
-      document.removeEventListener('keyup', checkUserDrivenTimeShift, true);
-      document.removeEventListener('touchstart', markUserIntent, true);
-      document.removeEventListener('touchend', checkUserDrivenTimeShift, true);
-    };
-  }, [
-    currentPageUrl,
-    isActiveRoomPage,
-    shouldScanMedia,
-    state?.autoSwitchHostContent,
-    state?.roomRole,
-    state?.targetPage?.normalizedUrl,
-    state?.transportEnabled,
-    targetWatchKey,
-  ]);
 
   useEffect(() => {
     if (!isTopFrame() || !isActiveRoomPage) return;
@@ -485,33 +184,6 @@ export function SyncOverlay() {
       document.removeEventListener('readystatechange', publish);
     };
   }, [currentPageUrl, isActiveRoomPage, state?.targetPage?.normalizedUrl, state?.roomRole, state?.transportEnabled]);
-
-  useEffect(() => {
-    if (!isActiveRoomPage) return;
-
-    guestMediaReadySentRef.current = false;
-  }, [currentPageUrl, isActiveRoomPage, state?.targetPage?.normalizedUrl]);
-
-  useEffect(() => {
-    if (!isActiveRoomPage) return;
-
-    const latestState = stateRef.current;
-    if (!latestState) return;
-    if (latestState.roomRole !== 'guest' || !latestState.followHost) return;
-    if (!latestState.roomMedia || !localMediaState) return;
-    if (!isRoomTargetUrl(latestState.targetPage, location.href)) return;
-    if (guestMediaReadySentRef.current) return;
-
-    guestMediaReadySentRef.current = true;
-    browser.runtime.sendMessage({ type: 'bsync:guest-sync' }).catch(() => undefined);
-  }, [
-    currentPageUrl,
-    isActiveRoomPage,
-    localMediaState,
-    state?.followHost,
-    state?.roomMedia,
-    state?.targetPage?.normalizedUrl,
-  ]);
 
   useEffect(() => {
     const host = document.querySelector<HTMLElement>('bsync-page-overlay');
