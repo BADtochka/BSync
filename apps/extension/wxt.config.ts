@@ -29,7 +29,7 @@ export default defineConfig({
       ? {
           browser_specific_settings: {
             gecko: {
-              id: firefoxExtensionId ?? '@bsync',
+              id: firefoxExtensionId ?? 'bsync@badtochka',
               data_collection_permissions: {
                 required: ['none' as const],
               },

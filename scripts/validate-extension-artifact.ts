@@ -71,6 +71,10 @@ await setOutput('version', packageJson.version);
 if (browserName === 'firefox') {
   const expectedId = process.env.WXT_FIREFOX_EXTENSION_ID;
   if (!expectedId) throw new Error('WXT_FIREFOX_EXTENSION_ID is required for Firefox validation.');
+  const validFirefoxId = /^(?:\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}|[a-z0-9._-]+@[a-z0-9._-]+)$/i;
+  if (!validFirefoxId.test(expectedId)) {
+    throw new Error('WXT_FIREFOX_EXTENSION_ID must be a {UUID} or an email-like Firefox ID.');
+  }
   const gecko = manifest.browser_specific_settings?.gecko;
   if (gecko?.id !== expectedId) {
     throw new Error(`Firefox manifest ID ${gecko?.id ?? '<missing>'} does not match ${expectedId}.`);

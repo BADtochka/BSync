@@ -71,6 +71,9 @@ jobs:
           if [[ -z "${WXT_FIREFOX_EXTENSION_ID:-}" ]]; then
             echo "WXT_FIREFOX_EXTENSION_ID is required. Add it as a repository variable or secret." >&2
             missing=1
+          elif [[ ! "$WXT_FIREFOX_EXTENSION_ID" =~ ^\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}$ && ! "$WXT_FIREFOX_EXTENSION_ID" =~ ^[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+$ ]]; then
+            echo "WXT_FIREFOX_EXTENSION_ID must be a {UUID} or an email-like Firefox ID." >&2
+            missing=1
           fi
 
           if [[ -z "${FIREFOX_JWT_ISSUER:-}" ]]; then

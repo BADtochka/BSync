@@ -68,7 +68,8 @@ push a matching `vX.Y.Z` tag. Tag-triggered runs publish the version from the ta
 
 Required GitHub variables or secrets:
 
-- `WXT_FIREFOX_EXTENSION_ID`
+- `WXT_FIREFOX_EXTENSION_ID` - Firefox GUID in `{UUID}` or email-like form, for example
+  `bsync@badtochka`; it must match the AMO listing
 
 Required GitHub secrets:
 
