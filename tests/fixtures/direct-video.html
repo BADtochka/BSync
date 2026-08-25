@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>BSync direct video fixture</title></head>
+  <body>
+    <h1>Direct video</h1>
+    <video id="direct-player" controls autoplay muted width="640" height="360"></video>
+    <script>
+      const canvas = document.createElement('canvas');
+      canvas.width = 640;
+      canvas.height = 360;
+      const context = canvas.getContext('2d');
+      let frame = 0;
+      setInterval(() => {
+        context.fillStyle = `hsl(${frame++ % 360} 70% 35%)`;
+        context.fillRect(0, 0, canvas.width, canvas.height);
+      }, 100);
+      document.querySelector('video').srcObject = canvas.captureStream(30);
+    </script>
+  </body>
+</html>

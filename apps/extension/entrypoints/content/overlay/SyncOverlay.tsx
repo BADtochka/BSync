@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import {
-  addTrustedDomain,
   canonicalRoomPageUrl,
   isRoomBoundPage,
   resolveSyncState,
@@ -9,7 +8,7 @@ import {
   updateSyncState,
   getSyncState,
   type ContentPageSnapshot,
-  type MediaSyncState,
+  type LocalMediaSelection,
   type SyncState,
 } from '@/lib/sync-state';
 import { OverlayDropGuides } from './OverlayDropGuides';
@@ -38,7 +37,10 @@ export function SyncOverlay() {
   const [state, setState] = useState<SyncState | null>(null);
   const [pageSnapshot, setPageSnapshot] = useState<ContentPageSnapshot>(() => getPageSnapshot());
   const [currentPageUrl, setCurrentPageUrl] = useState(() => location.href);
-  const [localMediaState, setLocalMediaState] = useState<MediaSyncState | null>(null);
+  const [localMediaSelection, setLocalMediaSelection] = useState<LocalMediaSelection>({
+    status: 'no-candidate',
+    media: null,
+  });
   const panelRef = useRef<HTMLDivElement>(null);
   const gripRef = useRef<HTMLDivElement>(null);
   const snapApiRef = useRef({
@@ -135,7 +137,7 @@ export function SyncOverlay() {
   }, []);
 
   useEffect(() => {
-    return subscribeTopFrameLocalMedia(setLocalMediaState);
+    return subscribeTopFrameLocalMedia(setLocalMediaSelection);
   }, []);
 
   useEffect(() => {
@@ -236,6 +238,10 @@ export function SyncOverlay() {
     }));
   };
 
+  const handleResumeMedia = async () => {
+    await browser.runtime.sendMessage({ type: 'bsync:media-resume' });
+  };
+
   const openPendingFocus = async (mode: 'current' | 'new', trustSite: boolean) => {
     const current = await getSyncState();
     const focusRequest = resolveSyncState(current).pendingFocusRequest;
@@ -247,18 +253,6 @@ export function SyncOverlay() {
       type: 'bsync:focus-open',
       payload: { mode, targetPage, trustSite },
     });
-
-    await updateSyncState((latest) => ({
-      ...latest,
-      targetPage,
-      overlayVisible: true,
-      pendingFocusRequest: null,
-      followHost: true,
-      detachedReason: null,
-      trustedDomains: trustSite
-        ? addTrustedDomain(latest.trustedDomains ?? [], targetPage.hostname || targetPage.url)
-        : latest.trustedDomains,
-    }));
   };
 
   const handleToggleCompact = async () => {
@@ -268,6 +262,7 @@ export function SyncOverlay() {
     }));
   };
 
+  const localMediaState = localMediaSelection.media;
   const mediaDriftLabel = getMediaDriftLabel(state.roomMedia, localMediaState);
   const dropGuidesPanelSize = panelRef.current
     ? getOverlayPanelSize(panelRef.current)
@@ -287,6 +282,7 @@ export function SyncOverlay() {
         state={state}
         pageSnapshot={pageSnapshot}
         localMediaState={localMediaState}
+        localMediaStatus={localMediaSelection.status}
         mediaDriftLabel={mediaDriftLabel}
         isDragging={isDragging}
         dragOffset={dragOffset}
@@ -296,6 +292,7 @@ export function SyncOverlay() {
         onToggleCompact={handleToggleCompact}
         onHide={handleHide}
         onFollowHost={handleFollowHost}
+        onResumeMedia={handleResumeMedia}
         onOpenPendingFocus={openPendingFocus}
       />
     </>

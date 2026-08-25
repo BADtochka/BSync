@@ -4,130 +4,43 @@ import {
   isRoomTargetUrl,
   subscribeSyncState,
   type MediaSyncState,
+  type LocalMediaSelection,
   type SyncState,
 } from '@/lib/sync-state';
+import { decideMediaDrift } from '@/lib/media/drift-controller';
 
-const MEDIA_PUBLISH_EVENTS = ['play', 'pause', 'seeked', 'ratechange', 'loadedmetadata'];
-const MEDIA_CONTROL_EVENTS = ['play', 'pause', 'seeking', 'seeked', 'ratechange'];
+const MEDIA_EVENTS = [
+  'play',
+  'pause',
+  'playing',
+  'waiting',
+  'seeking',
+  'seeked',
+  'loadedmetadata',
+  'durationchange',
+  'ratechange',
+  'emptied',
+];
 const USER_INTENT_WINDOW_MS = 2500;
 const DETACH_COOLDOWN_MS = 1200;
 const SEEK_DETACH_SECONDS = 0.75;
-const MEDIA_LOSS_GRACE_MS = 3000;
+const HEARTBEAT_MS = 1000;
 
-export type MediaFrameSyncOptions = {
-  onLocalMediaChange?: (media: MediaSyncState | null) => void;
-};
-
-type LocalMediaListener = (media: MediaSyncState | null) => void;
+type LocalMediaListener = (selection: LocalMediaSelection) => void;
 
 const topFrameLocalMediaListeners = new Set<LocalMediaListener>();
-const topFrameMediaByFrame = new Map<
-  number,
-  { media: MediaSyncState; missingSince: number | null }
->();
-let selectedTopFrameMediaFrameId: number | null = null;
-let topFrameMediaGraceTimer: ReturnType<typeof setTimeout> | null = null;
+let selectedTopFrameMedia: LocalMediaSelection = { status: 'no-candidate', media: null };
 
 export function subscribeTopFrameLocalMedia(listener: LocalMediaListener): () => void {
   if (!isTopFrame()) return () => {};
-
   topFrameLocalMediaListeners.add(listener);
-  return () => {
-    topFrameLocalMediaListeners.delete(listener);
-  };
+  listener(selectedTopFrameMedia);
+  return () => topFrameLocalMediaListeners.delete(listener);
 }
 
-function notifyTopFrameLocalMedia(media: MediaSyncState | null) {
-  for (const listener of topFrameLocalMediaListeners) {
-    listener(media);
-  }
-}
-
-function selectTopFrameLocalMedia(): MediaSyncState | null {
-  const now = Date.now();
-  for (const [frameId, candidate] of topFrameMediaByFrame) {
-    if (candidate.missingSince != null && now - candidate.missingSince >= MEDIA_LOSS_GRACE_MS) {
-      topFrameMediaByFrame.delete(frameId);
-      if (selectedTopFrameMediaFrameId === frameId) selectedTopFrameMediaFrameId = null;
-    }
-  }
-
-  if (selectedTopFrameMediaFrameId != null) {
-    const selected = topFrameMediaByFrame.get(selectedTopFrameMediaFrameId);
-    const hasOtherPlayingCandidate = [...topFrameMediaByFrame.entries()].some(
-      ([frameId, candidate]) => frameId !== selectedTopFrameMediaFrameId && !candidate.media.paused,
-    );
-    if (selected && (!selected.media.paused || !hasOtherPlayingCandidate)) return selected.media;
-  }
-
-  const next = [...topFrameMediaByFrame.entries()].sort((left, right) => {
-    if (left[1].media.paused !== right[1].media.paused) return left[1].media.paused ? 1 : -1;
-    return (right[1].media.duration ?? 0) - (left[1].media.duration ?? 0);
-  })[0];
-  selectedTopFrameMediaFrameId = next?.[0] ?? null;
-  return next?.[1].media ?? null;
-}
-
-function scheduleTopFrameMediaPrune() {
-  if (topFrameMediaGraceTimer) clearTimeout(topFrameMediaGraceTimer);
-  const now = Date.now();
-  const nextExpiry = [...topFrameMediaByFrame.values()].reduce<number | null>(
-    (earliest, candidate) => {
-      if (candidate.missingSince == null) return earliest;
-      const expiresAt = candidate.missingSince + MEDIA_LOSS_GRACE_MS;
-      return earliest == null ? expiresAt : Math.min(earliest, expiresAt);
-    },
-    null,
-  );
-  if (nextExpiry == null) {
-    topFrameMediaGraceTimer = null;
-    return;
-  }
-
-  topFrameMediaGraceTimer = setTimeout(() => {
-    topFrameMediaGraceTimer = null;
-    notifyTopFrameLocalMedia(selectTopFrameLocalMedia());
-    scheduleTopFrameMediaPrune();
-  }, Math.max(0, nextExpiry - now));
-}
-
-function updateTopFrameLocalMedia(frameId: number, media: MediaSyncState | null) {
-  if (!isTopFrame()) return;
-
-  if (media) {
-    topFrameMediaByFrame.set(frameId, { media, missingSince: null });
-  } else {
-    const current = topFrameMediaByFrame.get(frameId);
-    if (current && current.missingSince == null) {
-      current.missingSince = Date.now();
-    }
-  }
-
-  scheduleTopFrameMediaPrune();
-  notifyTopFrameLocalMedia(selectTopFrameLocalMedia());
-}
-
-function reportLocalMedia(
-  media: MediaSyncState | null,
-  options: MediaFrameSyncOptions,
-) {
-  options.onLocalMediaChange?.(media);
-
-  if (isTopFrame()) {
-    updateTopFrameLocalMedia(0, media);
-    return;
-  }
-
-  browser.runtime
-    .sendMessage({
-      type: 'bsync:frame-local-media',
-      payload: media,
-    })
-    .catch(() => undefined);
-}
-
-function getTargetWatchKey(state: SyncState | null): string {
-  return `${state?.targetPage?.normalizedUrl ?? 'none'}|${state?.targetPage?.createdAt ?? 0}`;
+function notifyTopFrameLocalMedia(selection: LocalMediaSelection) {
+  selectedTopFrameMedia = selection;
+  for (const listener of topFrameLocalMediaListeners) listener(selection);
 }
 
 function isTopFrame(): boolean {
@@ -136,11 +49,8 @@ function isTopFrame(): boolean {
 
 function getTopFrameUrl(): string | null {
   if (isTopFrame()) return location.href;
-
   try {
-    const top = window.top;
-    if (!top) return null;
-    return top.location.href;
+    return window.top?.location.href ?? null;
   } catch {
     return null;
   }
@@ -149,19 +59,21 @@ function getTopFrameUrl(): string | null {
 function isFrameRoomBound(state: SyncState): boolean {
   const topUrl = getTopFrameUrl();
   if (topUrl) return isRoomBoundPage(state, topUrl);
-
   return state.roomRole !== 'none' && state.transportEnabled && Boolean(state.targetPage);
 }
 
-function getPrimaryMediaElement(): HTMLMediaElement | null {
-  const mediaElements = [...document.querySelectorAll<HTMLMediaElement>('video, audio')];
-  if (mediaElements.length === 0) return null;
+function getTargetWatchKey(state: SyncState | null): string {
+  return `${state?.targetPage?.normalizedUrl ?? 'none'}|${state?.targetPage?.createdAt ?? 0}`;
+}
 
-  return mediaElements.sort((left, right) => {
-    const leftDuration = Number.isFinite(left.duration) ? left.duration : 0;
-    const rightDuration = Number.isFinite(right.duration) ? right.duration : 0;
-    return rightDuration - leftDuration;
-  })[0] ?? null;
+function shouldScanMedia(state: SyncState | null): boolean {
+  if (!state) return false;
+  const topUrl = getTopFrameUrl();
+  const isActiveRoomPage = topUrl ? isRoomBoundPage(state, topUrl) : isFrameRoomBound(state);
+  const canAutoSwitchHostContent =
+    state.roomRole === 'host' &&
+    state.autoSwitchHostContent;
+  return isActiveRoomPage || canAutoSwitchHostContent;
 }
 
 function getMediaId(media: HTMLMediaElement): string {
@@ -182,256 +94,264 @@ function getMediaState(media: HTMLMediaElement): MediaSyncState {
   };
 }
 
+function getViewportArea(media: HTMLMediaElement): number {
+  const rect = media.getBoundingClientRect();
+  const width = Math.max(0, Math.min(rect.right, innerWidth) - Math.max(rect.left, 0));
+  const height = Math.max(0, Math.min(rect.bottom, innerHeight) - Math.max(rect.top, 0));
+  return width * height;
+}
+
+function isMediaVisible(media: HTMLMediaElement, viewportArea: number): boolean {
+  if (!media.isConnected || viewportArea <= 0) return false;
+  const style = getComputedStyle(media);
+  return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) !== 0;
+}
+
 function getMediaDriftSeconds(left: MediaSyncState, right: MediaSyncState): number {
   return Math.round(Math.abs(left.currentTime - right.currentTime) * 10) / 10;
 }
 
-async function applyMediaState(media: HTMLMediaElement, remoteState: MediaSyncState) {
-  if (Number.isFinite(remoteState.playbackRate) && media.playbackRate !== remoteState.playbackRate) {
-    media.playbackRate = remoteState.playbackRate;
+async function applyMediaState(
+  media: HTMLMediaElement,
+  remoteState: MediaSyncState,
+  rttMs?: number,
+) {
+  const decision = decideMediaDrift({
+    localTime: media.currentTime,
+    paused: remoteState.paused,
+    hostTime: remoteState.currentTime,
+    hostPlaybackRate: remoteState.playbackRate,
+    hostUpdatedAt: remoteState.updatedAt,
+    now: Date.now(),
+    duration: remoteState.duration,
+    rttMs,
+  });
+  if (media.playbackRate !== decision.playbackRate) media.playbackRate = decision.playbackRate;
+  if (
+    (decision.correction === 'seek' || decision.correction === 'align') &&
+    media.currentTime !== decision.expectedTime
+  ) {
+    media.currentTime = decision.expectedTime;
   }
-
-  const driftSeconds = Math.abs(media.currentTime - remoteState.currentTime);
-  if (Number.isFinite(remoteState.currentTime) && driftSeconds > 0.75) {
-    media.currentTime = remoteState.currentTime;
-  }
-
-  if (remoteState.paused && !media.paused) {
-    media.pause();
-  }
-
-  if (!remoteState.paused && media.paused) {
-    await media.play();
-  }
+  if (remoteState.paused && !media.paused) media.pause();
+  if (!remoteState.paused && media.paused) await media.play();
 }
 
-function shouldScanMedia(state: SyncState | null, roomTargetSeenKey: string): boolean {
-  if (!state) return false;
-
-  const targetWatchKey = getTargetWatchKey(state);
-  const topUrl = getTopFrameUrl();
-  const isActiveRoomPage = topUrl ? isRoomBoundPage(state, topUrl) : isFrameRoomBound(state);
-  const canAutoSwitchHostContent =
-    state.roomRole === 'host' &&
-    state.autoSwitchHostContent &&
-    roomTargetSeenKey === targetWatchKey;
-
-  return isActiveRoomPage || canAutoSwitchHostContent;
-}
-
-export function startMediaFrameSync(options: MediaFrameSyncOptions = {}): () => void {
+export function startMediaFrameSync(): () => void {
+  const documentId = globalThis.crypto?.randomUUID?.() ?? `document-${Date.now()}-${Math.random()}`;
+  const mediaKeys = new WeakMap<HTMLMediaElement, string>();
+  const mediaByKey = new Map<string, HTMLMediaElement>();
+  const cleanupByKey = new Map<string, () => void>();
+  const lastPlayingAt = new Map<string, number>();
+  let nextMediaKey = 0;
   let stateRef: SyncState | null = null;
   let roomTargetSeenKey = '';
   let guestMediaReadySent = false;
-  let lastPublishedMediaKey = '';
   let suppressMediaPublishUntil = 0;
   let userIntentUntil = 0;
   let userIntentMediaTime: number | null = null;
+  let userIntentMedia: HTMLMediaElement | null = null;
   let lastDetachSentAt = 0;
-  let lastPrimaryMediaId = '';
-  let cleanupMediaListeners: (() => void) | undefined;
-  let mediaScanTimer: ReturnType<typeof setInterval> | null = null;
-  let progressTimer: ReturnType<typeof setInterval> | null = null;
+  let pendingUserAction: {
+    commandId: string;
+    mediaKey: string;
+    media: MediaSyncState;
+    rttMs?: number;
+  } | null = null;
+  let activeApplyCommandId: string | null = null;
+  let activeApplyMediaKey: string | null = null;
+  let resumeButton: HTMLButtonElement | null = null;
 
-  const publishMediaState = () => {
-    const latestState = stateRef;
-    if (!latestState || !shouldScanMedia(latestState, roomTargetSeenKey)) {
-      reportLocalMedia(null, options);
-      return;
-    }
-
-    const targetWatchKey = getTargetWatchKey(latestState);
-    const topUrl = getTopFrameUrl();
-    const isBoundPage = topUrl ? isRoomBoundPage(latestState, topUrl) : isFrameRoomBound(latestState);
-    const canAutoSwitchHostContent =
-      latestState.roomRole === 'host' &&
-      latestState.autoSwitchHostContent &&
-      roomTargetSeenKey === targetWatchKey;
-
-    if (!isBoundPage && !canAutoSwitchHostContent) {
-      reportLocalMedia(null, options);
-      return;
-    }
-
-    const media = getPrimaryMediaElement();
-    if (!media) {
-      reportLocalMedia(null, options);
-      return;
-    }
-
-    const nextMediaState = getMediaState(media);
-    if (nextMediaState.mediaId !== lastPrimaryMediaId) {
-      lastPrimaryMediaId = nextMediaState.mediaId;
-      guestMediaReadySent = false;
-    }
-    reportLocalMedia(nextMediaState, options);
-
-    if (latestState.roomRole !== 'host') return;
-    if (Date.now() < suppressMediaPublishUntil) return;
-
-    const publishKey = [
-      nextMediaState.mediaId,
-      nextMediaState.paused,
-      Math.round(nextMediaState.currentTime),
-      nextMediaState.playbackRate,
-      nextMediaState.duration ?? 'live',
-    ].join('|');
-
-    if (publishKey === lastPublishedMediaKey) return;
-    lastPublishedMediaKey = publishKey;
-
-    browser.runtime
-      .sendMessage({
-        type: 'bsync:media-state',
-        payload: nextMediaState,
-      })
-      .catch(() => undefined);
+  const hideResumeButton = () => {
+    resumeButton?.remove();
+    resumeButton = null;
   };
 
-  const sendDetachFromHost = (reason: string, mediaElement?: HTMLMediaElement | null) => {
-    const latestState = stateRef;
-    if (!latestState || !isFrameRoomBound(latestState)) return;
-    if (latestState.roomRole !== 'guest' || !latestState.followHost) return;
+  const sendRemove = (mediaKey: string) => {
+    browser.runtime.sendMessage({
+      type: 'bsync:media-candidate-remove',
+      payload: { documentId, mediaKey },
+    }).catch(() => undefined);
+  };
 
+  const reportMedia = (media: HTMLMediaElement) => {
+    if (!shouldScanMedia(stateRef)) return;
+    const mediaKey = mediaKeys.get(media);
+    if (!mediaKey) return;
+    const viewportArea = getViewportArea(media);
+    browser.runtime.sendMessage({
+      type: 'bsync:media-candidate-upsert',
+      payload: {
+        documentId,
+        mediaKey,
+        media: getMediaState(media),
+        readyState: media.readyState,
+        visible: isMediaVisible(media, viewportArea),
+        viewportArea,
+        lastPlayingAt: lastPlayingAt.get(mediaKey),
+      },
+    }).catch(() => undefined);
+  };
+
+  const detachFromHost = (eventName: string, media: HTMLMediaElement) => {
+    const state = stateRef;
+    if (!state || !isFrameRoomBound(state) || state.roomRole !== 'guest' || !state.followHost) return;
     const now = Date.now();
+    if (now < suppressMediaPublishUntil || now > userIntentUntil) return;
     if (now - lastDetachSentAt < DETACH_COOLDOWN_MS) return;
-
-    const media = mediaElement ?? getPrimaryMediaElement();
-    if (!media) return;
-
     lastDetachSentAt = now;
-    browser.runtime
-      .sendMessage({
-        type: 'bsync:media-detach',
-        payload: {
-          reason,
-          media: getMediaState(media),
-        },
-      })
-      .catch(() => undefined);
+    browser.runtime.sendMessage({
+      type: 'bsync:media-detach',
+      payload: { reason: `Local ${eventName}`, media: getMediaState(media) },
+    }).catch(() => undefined);
   };
 
-  const detachFromHost = (eventName: string) => {
-    const now = Date.now();
-    const hasUserIntent = now <= userIntentUntil;
-    const isRemoteApply = now < suppressMediaPublishUntil;
-    const isSeekEvent = eventName === 'seeking' || eventName === 'seeked';
+  const attachMedia = (media: HTMLMediaElement) => {
+    if (mediaKeys.has(media)) return;
+    const mediaKey = `media-${++nextMediaKey}`;
+    mediaKeys.set(media, mediaKey);
+    mediaByKey.set(mediaKey, media);
+    if (!media.paused) lastPlayingAt.set(mediaKey, Date.now());
 
-    if (isRemoteApply) return;
-    if (!hasUserIntent && !isSeekEvent) return;
-    sendDetachFromHost(`Local ${eventName}`);
-  };
-
-  const checkUserDrivenTimeShift = () => {
-    if (Date.now() > userIntentUntil) return;
-    if (Date.now() < suppressMediaPublishUntil) return;
-
-    const initialTime = userIntentMediaTime;
-    if (initialTime == null) return;
-
-    const media = getPrimaryMediaElement();
-    if (!media || !Number.isFinite(media.currentTime)) return;
-
-    if (Math.abs(media.currentTime - initialTime) < SEEK_DETACH_SECONDS) return;
-
-    sendDetachFromHost('Local seek', media);
-    userIntentMediaTime = null;
-  };
-
-  const attachMediaListeners = () => {
-    const media = getPrimaryMediaElement();
-    if (!media) return;
-
-    for (const eventName of MEDIA_PUBLISH_EVENTS) {
-      media.addEventListener(eventName, publishMediaState);
-    }
-
-    const controlHandlers = MEDIA_CONTROL_EVENTS.map((eventName) => {
-      const handler = () => detachFromHost(eventName);
+    const handlers = MEDIA_EVENTS.map((eventName) => {
+      const handler = () => {
+        if (eventName === 'play' || eventName === 'playing') {
+          lastPlayingAt.set(mediaKey, Date.now());
+        }
+        reportMedia(media);
+        if (['play', 'pause', 'seeking', 'seeked', 'ratechange'].includes(eventName)) {
+          detachFromHost(eventName, media);
+        }
+      };
       media.addEventListener(eventName, handler);
       return { eventName, handler };
     });
-
-    return () => {
-      for (const eventName of MEDIA_PUBLISH_EVENTS) {
-        media.removeEventListener(eventName, publishMediaState);
-      }
-      for (const { eventName, handler } of controlHandlers) {
-        media.removeEventListener(eventName, handler);
-      }
-    };
+    cleanupByKey.set(mediaKey, () => {
+      for (const { eventName, handler } of handlers) media.removeEventListener(eventName, handler);
+    });
+    reportMedia(media);
   };
 
-  const markUserIntent = () => {
-    const now = Date.now();
-    const media = getPrimaryMediaElement();
-
-    if (now > userIntentUntil || userIntentMediaTime == null) {
-      userIntentMediaTime = media ? media.currentTime : null;
+  const removeMedia = (mediaKey: string) => {
+    const media = mediaByKey.get(mediaKey);
+    cleanupByKey.get(mediaKey)?.();
+    cleanupByKey.delete(mediaKey);
+    mediaByKey.delete(mediaKey);
+    lastPlayingAt.delete(mediaKey);
+    if (media) mediaKeys.delete(media);
+    guestMediaReadySent = false;
+    if (pendingUserAction?.mediaKey === mediaKey) {
+      pendingUserAction = null;
+      hideResumeButton();
     }
-
-    userIntentUntil = now + USER_INTENT_WINDOW_MS;
-    window.setTimeout(checkUserDrivenTimeShift, 250);
-    window.setTimeout(checkUserDrivenTimeShift, 900);
+    if (activeApplyMediaKey === mediaKey) {
+      activeApplyCommandId = null;
+      activeApplyMediaKey = null;
+    }
+    sendRemove(mediaKey);
   };
 
-  const restartMediaScan = () => {
-    cleanupMediaListeners?.();
-    cleanupMediaListeners = attachMediaListeners();
-    publishMediaState();
+  const scanMedia = () => {
+    const found = new Set(document.querySelectorAll<HTMLMediaElement>('video, audio'));
+    for (const media of found) attachMedia(media);
+    for (const [mediaKey, media] of mediaByKey) {
+      if (!found.has(media)) removeMedia(mediaKey);
+    }
   };
 
-  const maybeSendGuestSync = async () => {
-    const latestState = stateRef;
-    if (!latestState || !isFrameRoomBound(latestState)) return;
-    if (latestState.roomRole !== 'guest' || !latestState.followHost) return;
-    if (!latestState.roomMedia) return;
-    if (!getPrimaryMediaElement()) return;
+  const reportAllMedia = () => {
+    if (!shouldScanMedia(stateRef)) {
+      for (const mediaKey of [...mediaByKey.keys()]) removeMedia(mediaKey);
+      return;
+    }
+    for (const media of mediaByKey.values()) reportMedia(media);
+  };
 
+  const attachMediaInNode = (node: Node) => {
+    if (node instanceof HTMLMediaElement) attachMedia(node);
+    if (!(node instanceof Element)) return;
+    for (const media of node.querySelectorAll<HTMLMediaElement>('video, audio')) attachMedia(media);
+  };
+
+  const maybeSendGuestSync = () => {
+    const state = stateRef;
+    if (!state || !isFrameRoomBound(state) || state.roomRole !== 'guest' || !state.followHost) return;
+    if (!state.roomMedia || mediaByKey.size === 0 || guestMediaReadySent) return;
     const topUrl = getTopFrameUrl();
-    if (topUrl && !isRoomTargetUrl(latestState.targetPage, topUrl)) return;
-    if (guestMediaReadySent) return;
-
+    if (topUrl && !isRoomTargetUrl(state.targetPage, topUrl)) return;
     guestMediaReadySent = true;
     browser.runtime.sendMessage({ type: 'bsync:guest-sync' }).catch(() => undefined);
   };
 
-  const messageListener = (message: unknown) => {
-    const latestState = stateRef;
-    if (!latestState || !isFrameRoomBound(latestState)) return;
+  const checkUserDrivenTimeShift = () => {
+    if (Date.now() > userIntentUntil || Date.now() < suppressMediaPublishUntil) return;
+    if (!userIntentMedia || userIntentMediaTime == null) return;
+    if (Math.abs(userIntentMedia.currentTime - userIntentMediaTime) < SEEK_DETACH_SECONDS) return;
+    detachFromHost('seek', userIntentMedia);
+    userIntentMediaTime = null;
+  };
 
-    if (!message || typeof message !== 'object') return;
-    const candidate = message as {
-      type?: string;
-      payload?: MediaSyncState | { frameId?: number; media?: MediaSyncState | null };
-    };
+  const markUserIntent = (event: Event) => {
+    const media = event.composedPath().find((node): node is HTMLMediaElement =>
+      node instanceof HTMLMediaElement,
+    ) ?? null;
+    userIntentMedia = media;
+    userIntentMediaTime = media?.currentTime ?? null;
+    userIntentUntil = Date.now() + USER_INTENT_WINDOW_MS;
+    setTimeout(checkUserDrivenTimeShift, 250);
+    setTimeout(checkUserDrivenTimeShift, 900);
+  };
 
-    if (candidate.type === 'bsync:frame-local-media' && isTopFrame()) {
-      const payload = candidate.payload;
-      if (payload && 'frameId' in payload) {
-        updateTopFrameLocalMedia(payload.frameId ?? -1, payload.media ?? null);
-      }
-      return;
-    }
+  const showResumeButton = () => {
+    if (resumeButton) return;
+    resumeButton = document.createElement('button');
+    resumeButton.type = 'button';
+    resumeButton.textContent = 'Click to resume sync';
+    resumeButton.setAttribute('aria-label', 'Click to resume BSync playback');
+    Object.assign(resumeButton.style, {
+      position: 'fixed',
+      right: '16px',
+      bottom: '16px',
+      zIndex: '2147483647',
+      padding: '10px 12px',
+      border: '1px solid #65f3ff',
+      borderRadius: '2px',
+      background: '#0e131b',
+      color: '#f1f6fa',
+      font: '600 12px/1.2 monospace',
+      cursor: 'pointer',
+    });
+    resumeButton.addEventListener('click', () => {
+      const pending = pendingUserAction;
+      if (pending) applyRequestedMedia(pending.commandId, pending.mediaKey, pending.media, pending.rttMs);
+    });
+    document.documentElement.append(resumeButton);
+  };
 
-    if (
-      candidate.type !== 'bsync:media-apply' ||
-      !candidate.payload ||
-      'frameId' in candidate.payload
-    ) return;
-
-    const requested = candidate.payload as MediaSyncState;
-    const media = getPrimaryMediaElement();
+  const applyRequestedMedia = (
+    commandId: string,
+    mediaKey: string,
+    requested: MediaSyncState,
+    rttMs?: number,
+  ) => {
+    const media = mediaByKey.get(mediaKey);
     if (!media) return;
-
+    activeApplyCommandId = commandId;
+    activeApplyMediaKey = mediaKey;
     const before = getMediaState(media);
     suppressMediaPublishUntil = Date.now() + 1200;
-    applyMediaState(media, requested)
+    applyMediaState(media, requested, rttMs)
       .then(() => {
+        if (activeApplyCommandId !== commandId) return;
+        activeApplyCommandId = null;
+        activeApplyMediaKey = null;
+        pendingUserAction = null;
+        hideResumeButton();
         const after = getMediaState(media);
         return browser.runtime.sendMessage({
           type: 'bsync:media-applied',
           payload: {
+            commandId,
             requested,
             before,
             after,
@@ -440,83 +360,112 @@ export function startMediaFrameSync(options: MediaFrameSyncOptions = {}): () => 
         });
       })
       .catch((error) => {
-        browser.runtime
-          .sendMessage({
-            type: 'bsync:media-apply-failed',
-            payload: {
-              requested,
-              reason: error instanceof Error ? error.message : 'Media apply failed',
-            },
-          })
-          .catch(() => undefined);
+        if (activeApplyCommandId !== commandId) return;
+        const userActionRequired = error instanceof Error && error.name === 'NotAllowedError';
+        if (userActionRequired) {
+          pendingUserAction = { commandId, mediaKey, media: requested, rttMs };
+          showResumeButton();
+        }
+        return browser.runtime.sendMessage({
+          type: 'bsync:media-apply-failed',
+          payload: {
+            commandId,
+            requested,
+            reason: error instanceof Error ? error.message : 'Media apply failed',
+            code: userActionRequired ? 'user-action-required' : undefined,
+          },
+        }).catch(() => undefined);
       });
   };
 
-  const onStateChange = (nextState: SyncState) => {
-    const previousTargetKey = getTargetWatchKey(stateRef);
-    stateRef = nextState;
-
-    const nextTargetKey = getTargetWatchKey(nextState);
-    const topUrl = getTopFrameUrl();
-    if (topUrl && isRoomBoundPage(nextState, topUrl)) {
-      roomTargetSeenKey = nextTargetKey;
-    }
-
-    if (previousTargetKey !== nextTargetKey) {
-      guestMediaReadySent = false;
-    }
-
-    if (!shouldScanMedia(nextState, roomTargetSeenKey)) {
-      reportLocalMedia(null, options);
+  const messageListener = (message: unknown) => {
+    if (!message || typeof message !== 'object') return;
+    const candidate = message as {
+      type?: string;
+      payload?: LocalMediaSelection | {
+        commandId?: string;
+        mediaKey?: string;
+        media?: MediaSyncState;
+        rttMs?: number;
+      };
+    };
+    if (candidate.type === 'bsync:selected-local-media' && isTopFrame()) {
+      notifyTopFrameLocalMedia(candidate.payload as LocalMediaSelection);
       return;
     }
-
-    restartMediaScan();
-    void maybeSendGuestSync();
+    if (candidate.type === 'bsync:media-apply-cancel') {
+      pendingUserAction = null;
+      activeApplyCommandId = null;
+      activeApplyMediaKey = null;
+      hideResumeButton();
+      return;
+    }
+    if (
+      candidate.type === 'bsync:media-apply-pending' &&
+      candidate.payload &&
+      'mediaKey' in candidate.payload
+    ) {
+      const { commandId, mediaKey, media, rttMs } = candidate.payload;
+      if (!commandId || !mediaKey || !media || !mediaByKey.has(mediaKey)) return;
+      activeApplyCommandId = commandId;
+      activeApplyMediaKey = mediaKey;
+      pendingUserAction = { commandId, mediaKey, media, rttMs };
+      showResumeButton();
+      return;
+    }
+    if (candidate.type !== 'bsync:media-apply' || !candidate.payload || !('mediaKey' in candidate.payload)) return;
+    const { commandId, mediaKey, media: requested, rttMs } = candidate.payload;
+    if (!commandId || !mediaKey || !requested) return;
+    applyRequestedMedia(commandId, mediaKey, requested, rttMs);
   };
 
-  const unwatch = subscribeSyncState(onStateChange);
+  const onStateChange = (state: SyncState) => {
+    const previousTargetKey = getTargetWatchKey(stateRef);
+    stateRef = state;
+    const nextTargetKey = getTargetWatchKey(state);
+    const topUrl = getTopFrameUrl();
+    if (topUrl && isRoomBoundPage(state, topUrl)) roomTargetSeenKey = nextTargetKey;
+    if (previousTargetKey !== nextTargetKey) guestMediaReadySent = false;
+    scanMedia();
+    reportAllMedia();
+    maybeSendGuestSync();
+  };
 
-  void getSyncState().then((state) => {
-    onStateChange(state);
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) attachMediaInNode(node);
+    }
+    for (const [mediaKey, media] of mediaByKey) {
+      if (!media.isConnected) removeMedia(mediaKey);
+    }
+    reportAllMedia();
+    maybeSendGuestSync();
   });
-
-  cleanupMediaListeners = attachMediaListeners();
-  mediaScanTimer = setInterval(() => {
-    if (!shouldScanMedia(stateRef, roomTargetSeenKey)) return;
-    restartMediaScan();
-    void maybeSendGuestSync();
-  }, 1500);
-  progressTimer = setInterval(() => {
-    if (!shouldScanMedia(stateRef, roomTargetSeenKey)) return;
-    publishMediaState();
-  }, 1000);
-
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  const heartbeat = setInterval(() => {
+    reportAllMedia();
+    maybeSendGuestSync();
+  }, HEARTBEAT_MS);
+  const unwatch = subscribeSyncState(onStateChange);
+  void getSyncState().then(onStateChange);
+  scanMedia();
   browser.runtime.onMessage.addListener(messageListener);
   document.addEventListener('pointerdown', markUserIntent, true);
-  document.addEventListener('pointerup', checkUserDrivenTimeShift, true);
   document.addEventListener('keydown', markUserIntent, true);
+  document.addEventListener('pointerup', checkUserDrivenTimeShift, true);
   document.addEventListener('keyup', checkUserDrivenTimeShift, true);
-  document.addEventListener('touchstart', markUserIntent, true);
-  document.addEventListener('touchend', checkUserDrivenTimeShift, true);
 
   return () => {
-    if (!isTopFrame()) {
-      browser.runtime
-        .sendMessage({ type: 'bsync:frame-local-media', payload: null })
-        .catch(() => undefined);
-    }
     unwatch();
-    cleanupMediaListeners?.();
-    if (mediaScanTimer) clearInterval(mediaScanTimer);
-    if (progressTimer) clearInterval(progressTimer);
-    if (isTopFrame() && topFrameMediaGraceTimer) clearTimeout(topFrameMediaGraceTimer);
+    observer.disconnect();
+    clearInterval(heartbeat);
+    pendingUserAction = null;
+    hideResumeButton();
+    for (const mediaKey of [...mediaByKey.keys()]) removeMedia(mediaKey);
     browser.runtime.onMessage.removeListener(messageListener);
     document.removeEventListener('pointerdown', markUserIntent, true);
-    document.removeEventListener('pointerup', checkUserDrivenTimeShift, true);
     document.removeEventListener('keydown', markUserIntent, true);
+    document.removeEventListener('pointerup', checkUserDrivenTimeShift, true);
     document.removeEventListener('keyup', checkUserDrivenTimeShift, true);
-    document.removeEventListener('touchstart', markUserIntent, true);
-    document.removeEventListener('touchend', checkUserDrivenTimeShift, true);
   };
 }

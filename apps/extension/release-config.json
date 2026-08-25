@@ -1,0 +1,5 @@
+{
+  "syncServer": "ws://localhost:8787",
+  "publicWebOrigin": "http://localhost:4175",
+  "firefoxExtensionId": "bsync@badtochka"
+}

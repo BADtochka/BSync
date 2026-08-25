@@ -23,7 +23,7 @@ export default defineConfig({
       default_title: 'BSync',
     },
     content_security_policy: {
-      extension_pages: "script-src 'self'; object-src 'self'; connect-src 'self' ws://localhost:* wss://*;",
+      extension_pages: "script-src 'self'; object-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:* wss://*;",
     },
     ...(browser === 'firefox'
       ? {
@@ -31,7 +31,12 @@ export default defineConfig({
             gecko: {
               id: firefoxExtensionId ?? 'bsync@badtochka',
               data_collection_permissions: {
-                required: ['none' as const],
+                required: [
+                  'authenticationInfo',
+                  'personallyIdentifyingInfo',
+                  'browsingActivity',
+                  'websiteActivity',
+                ],
               },
             },
           },

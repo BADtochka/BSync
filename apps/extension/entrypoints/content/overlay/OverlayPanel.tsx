@@ -6,6 +6,7 @@ import {
   statusLabel,
   type ContentPageSnapshot,
   type MediaSyncState,
+  type LocalMediaSelection,
   type RoomFocusRequest,
   type SyncState,
   type TabSyncState,
@@ -14,10 +15,40 @@ import type { Ref } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { getMediaDisplayLabel } from './media';
 
+function connectionLabel(state: SyncState): string {
+  if (state.roomRole === 'guest' && !state.followHost) return 'Desynced';
+  if (
+    state.connectionState === 'synced' &&
+    state.status === 'paused' &&
+    state.transportStatus === 'online'
+  ) return 'Synced | Paused';
+
+  switch (state.connectionState) {
+    case 'resolving-invite': return 'Resolving';
+    case 'connecting': return 'Connecting';
+    case 'joining': return 'Joining';
+    case 'synced': return 'Synced';
+    case 'reconnecting': return 'Reconnecting';
+    case 'degraded': return 'Degraded';
+    case 'error': return 'Error';
+    case 'idle':
+    default: return 'Idle';
+  }
+}
+
+function serverLabel(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 type OverlayPanelProps = {
   state: SyncState;
   pageSnapshot: ContentPageSnapshot;
   localMediaState: MediaSyncState | null;
+  localMediaStatus: LocalMediaSelection['status'];
   mediaDriftLabel: string | null;
   isDragging: boolean;
   dragOffset: { x: number; y: number };
@@ -27,6 +58,7 @@ type OverlayPanelProps = {
   onToggleCompact: () => void;
   onHide: () => void;
   onFollowHost: () => void;
+  onResumeMedia: () => void;
   onOpenPendingFocus: (mode: 'current' | 'new', trustSite: boolean) => void;
 };
 
@@ -46,6 +78,7 @@ export function OverlayPanel({
   state,
   pageSnapshot,
   localMediaState,
+  localMediaStatus,
   mediaDriftLabel,
   isDragging,
   dragOffset,
@@ -55,9 +88,31 @@ export function OverlayPanel({
   onToggleCompact,
   onHide,
   onFollowHost,
+  onResumeMedia,
   onOpenPendingFocus,
 }: OverlayPanelProps) {
   const [trustFocusSite, setTrustFocusSite] = useState(false);
+  const isDetached = state.roomRole === 'guest' && !state.followHost;
+  const connectionUnhealthy =
+    state.connectionState === 'connecting' ||
+    state.connectionState === 'joining' ||
+    state.connectionState === 'reconnecting' ||
+    state.connectionState === 'degraded' ||
+    state.connectionState === 'error';
+  const overlayStatus = isDetached
+    ? 'detached'
+    : connectionUnhealthy
+      ? state.connectionState === 'error' ? 'error' : 'connecting'
+      : state.status;
+  const overlayStatusLabel = isDetached
+    ? 'Desynced'
+    : connectionUnhealthy
+      ? connectionLabel(state)
+      : state.status === 'paused' && state.transportStatus === 'online'
+      ? 'Synced | Paused'
+      : statusLabel(state.status);
+  const currentConnectionLabel = connectionLabel(state);
+  const mediaSummary = state.roomMedia ? getMediaDisplayLabel(state.roomMedia) : 'No media';
 
   useEffect(() => {
     setTrustFocusSite(false);
@@ -80,9 +135,31 @@ export function OverlayPanel({
       </div>
 
       <div className='bsync-header'>
-        <div>
-          <span className={`bsync-dot bsync-dot--${state.status}`} />
-          <strong>{statusLabel(state.status)}</strong>
+        <div className='bsync-brand'>
+          <strong className='bsync-wordmark'>BSYNC</strong>
+          <span className='bsync-role'>{state.roomRole === 'none' ? 'IDLE' : state.roomRole.toUpperCase()}</span>
+        </div>
+        <div className='bsync-connection'>
+          <small>Connection</small>
+          <span
+            className={`bsync-status-icon bsync-status-icon--${overlayStatus}`}
+            role='img'
+            aria-label={overlayStatusLabel}
+          >
+            {overlayStatus === 'paused' ? (
+              <svg viewBox='0 0 12 12' aria-hidden='true'>
+                <rect x='2.5' y='2' width='2.5' height='8' rx='0.75' />
+                <rect x='7' y='2' width='2.5' height='8' rx='0.75' />
+              </svg>
+            ) : overlayStatus === 'detached' || overlayStatus === 'error' ? (
+              <svg viewBox='0 0 12 12' aria-hidden='true'>
+                <path d='M3 3l6 6M9 3L3 9' />
+              </svg>
+            ) : (
+              <span aria-hidden='true' />
+            )}
+          </span>
+          <strong>{overlayStatusLabel}</strong>
         </div>
         <button type='button' onClick={onToggleCompact}>
           {state.compact ? 'Open' : 'Min'}
@@ -90,6 +167,14 @@ export function OverlayPanel({
       </div>
 
       <div className='bsync-body'>
+        <div className='bsync-compact-summary' aria-label='Room summary'>
+          <span><small>Connection</small><strong>{currentConnectionLabel}</strong></span>
+          <span><small>Peers</small><strong>{state.peerCount}</strong></span>
+          <span className='bsync-compact-media' title={mediaSummary}><small>Media</small><strong>{mediaSummary}</strong></span>
+          <span title={state.serverUrl}><small>Server</small><strong>{serverLabel(state.serverUrl)}</strong></span>
+          <span title={pageSnapshot.hostname}><small>Domain</small><strong>{pageSnapshot.hostname || 'Unknown'}</strong></span>
+        </div>
+
         <div className='bsync-room'>
           <span>{state.roomCode}</span>
           <small>{state.roomRole === 'host' ? 'Host control' : state.followHost ? 'Following host' : 'Detached'}</small>
@@ -124,7 +209,7 @@ export function OverlayPanel({
           </div>
         ) : null}
 
-        {state.roomRole === 'guest' && !state.followHost ? (
+        {isDetached ? (
           <div className='bsync-detached'>
             <div>
               <strong>Not synced with host</strong>
@@ -132,6 +217,18 @@ export function OverlayPanel({
             </div>
             <button type='button' className='is-primary' onClick={onFollowHost}>
               Follow host
+            </button>
+          </div>
+        ) : null}
+
+        {state.mediaActionRequired ? (
+          <div className='bsync-detached'>
+            <div>
+              <strong>Playback needs permission</strong>
+              <small>Browser autoplay policy blocked remote playback.</small>
+            </div>
+            <button type='button' className='is-primary' onClick={onResumeMedia}>
+              Click to resume sync
             </button>
           </div>
         ) : null}
@@ -171,7 +268,9 @@ export function OverlayPanel({
           <p className='bsync-page'>
             {localMediaState
               ? `Local: ${getMediaDisplayLabel(localMediaState)}${mediaDriftLabel ? ` · ${mediaDriftLabel}` : ''}`
-              : 'Local: no media found'}
+              : localMediaStatus === 'reacquiring'
+                ? 'Local: reacquiring media'
+                : 'Local: no media found'}
           </p>
         ) : null}
 

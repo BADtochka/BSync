@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>BSync SPA player fixture</title></head>
+  <body>
+    <h1>SPA player</h1>
+    <button id="navigate" type="button">Navigate and replace player</button>
+    <main id="app"></main>
+    <script>
+      const app = document.querySelector('#app');
+      function render() {
+        const video = document.createElement('video');
+        video.controls = true;
+        video.autoplay = true;
+        video.muted = true;
+        video.width = 640;
+        video.height = 360;
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 360;
+        video.srcObject = canvas.captureStream(30);
+        app.replaceChildren(video);
+      }
+      document.querySelector('#navigate').addEventListener('click', () => {
+        history.pushState({}, '', `/spa-player.html?episode=${Date.now()}`);
+        render();
+      });
+      render();
+    </script>
+  </body>
+</html>

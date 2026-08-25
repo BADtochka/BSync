@@ -15,3 +15,11 @@ Use **Replace media** to reproduce an iframe/player lifecycle change without
 reloading the top document. During the Phase 0 baseline, inspect the extension
 activity log for `media.candidate.detected`, `media.apply`, and
 `media.apply.blocked` entries with tab/frame attribution.
+
+Additional pages cover direct media, competing candidates, SPA replacement, and
+full iframe replacement:
+
+- `direct-video.html`
+- `multiple-media.html`
+- `spa-player.html`
+- `replaced-iframe.html`

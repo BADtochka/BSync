@@ -1,6 +1,7 @@
 import { render } from 'preact';
 import { SyncOverlay } from './content/overlay/SyncOverlay';
 import { startMediaFrameSync } from './content/overlay/media-frame-sync';
+import { startWebInviteBridge } from './content/web-invite-bridge';
 import './content/styles.css';
 
 function isTopFrame(): boolean {
@@ -15,11 +16,14 @@ export default defineContentScript({
   runAt: 'document_idle',
   async main(ctx) {
     const stopMediaSync = startMediaFrameSync();
+    let stopWebInviteBridge = () => {};
     ctx.onInvalidated(() => {
       stopMediaSync();
+      stopWebInviteBridge();
     });
 
     if (!isTopFrame()) return;
+    stopWebInviteBridge = startWebInviteBridge();
 
     const ui = await createShadowRootUi(ctx, {
       name: 'bsync-page-overlay',

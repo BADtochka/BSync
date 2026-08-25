@@ -60,11 +60,12 @@ Required GitHub secrets:
 
 ## Firefox Add-ons release
 
-Run the `Publish Firefox Add-on` workflow manually, or let it run automatically when a `v*` tag is
-pushed (for example after a Chrome release).
+Run the `Publish Firefox Add-on` workflow manually from a `v*` tag, or let the Chrome release
+workflow explicitly dispatch it from the immutable tag it creates. Tag pushes alone do not publish.
 
-Manual runs can bump `apps/extension/package.json`, build the Firefox zip, upload it to AMO, and
-push a matching `vX.Y.Z` tag. Tag-triggered runs publish the version from the tag without bumping.
+Production Firefox runs build and publish only an existing `vX.Y.Z` tag that matches the extension
+version and belongs to `main`. Version creation remains centralized in the Chrome release workflow;
+manual Firefox runs are useful for dry-run validation or retrying an existing release tag.
 
 Required GitHub variables or secrets:
 

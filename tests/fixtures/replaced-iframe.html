@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>BSync replaced iframe fixture</title></head>
+  <body>
+    <h1>Replaced iframe</h1>
+    <button id="replace" type="button">Replace iframe</button>
+    <main id="frame-host"></main>
+    <script>
+      const host = document.querySelector('#frame-host');
+      function render() {
+        const iframe = document.createElement('iframe');
+        iframe.src = `http://127.0.0.1:4174/iframe-player.html?instance=${Date.now()}`;
+        iframe.width = '720';
+        iframe.height = '480';
+        host.replaceChildren(iframe);
+      }
+      document.querySelector('#replace').addEventListener('click', render);
+      render();
+    </script>
+  </body>
+</html>

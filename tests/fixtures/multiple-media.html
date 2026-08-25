@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>BSync multiple media fixture</title></head>
+  <body>
+    <h1>Multiple media candidates</h1>
+    <video id="main-player" controls autoplay muted width="640" height="360"></video>
+    <video id="hidden-preload" muted width="1" height="1" style="display:none"></video>
+    <script>
+      function stream(color) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 360;
+        const context = canvas.getContext('2d');
+        context.fillStyle = color;
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        return canvas.captureStream(30);
+      }
+      document.querySelector('#main-player').srcObject = stream('#174b63');
+      document.querySelector('#hidden-preload').srcObject = stream('#632117');
+    </script>
+  </body>
+</html>

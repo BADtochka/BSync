@@ -6,7 +6,14 @@ if (ports.some((port) => !Number.isInteger(port) || port < 1 || port > 65535)) {
 }
 
 const fixtureRoot = import.meta.dir;
-const allowedFiles = new Set(['iframe-host.html', 'iframe-player.html']);
+const allowedFiles = new Set([
+  'direct-video.html',
+  'iframe-host.html',
+  'iframe-player.html',
+  'multiple-media.html',
+  'replaced-iframe.html',
+  'spa-player.html',
+]);
 
 for (const port of ports) {
   Bun.serve({

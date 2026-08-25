@@ -1,0 +1,23 @@
+{
+  "name": "@bsync/web",
+  "description": "BSync landing, install, and invite PWA.",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "compile": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bsync/invite": "workspace:*",
+    "@bsync/ui": "workspace:*",
+    "preact": "^10.29.2"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.5",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.3"
+  }
+}

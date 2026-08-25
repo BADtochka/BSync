@@ -12,20 +12,25 @@
   "scripts": {
     "dev": "bun run --cwd apps/extension dev",
     "dev:extension": "bun run --cwd apps/extension dev",
+    "dev:web": "bun run --cwd apps/web dev",
     "dev:firefox": "bun run --cwd apps/extension dev:firefox",
     "dev:sync-server": "bun run --cwd apps/sync-server dev",
-    "build": "bun run --cwd apps/extension build",
+    "build": "bun run build:extension && bun run build:web",
+    "build:extension": "bun run --cwd apps/extension build",
+    "build:web": "bun run --cwd apps/web build",
     "build:firefox": "bun run --cwd apps/extension build:firefox",
     "zip": "bun run --cwd apps/extension zip",
     "zip:firefox": "bun run --cwd apps/extension zip:firefox",
     "validate:artifact": "bun scripts/validate-extension-artifact.ts",
+    "validate:public-config": "bun scripts/validate-public-config.ts",
     "publish:firefox": "bun scripts/publish-firefox-addons.ts",
     "tools:versions": "bun scripts/print-release-tool-versions.ts",
     "version:extension": "bun scripts/bump-extension-version.ts",
     "publish:chrome": "bun scripts/publish-chrome-webstore.ts",
     "sync-server": "bun run --cwd apps/sync-server start",
     "sync-server:dev": "bun run --cwd apps/sync-server dev",
-    "compile": "bun run --cwd packages/sync-protocol compile && bun run --cwd apps/extension compile && bun run --cwd apps/sync-server compile",
+    "compile": "bun run --cwd packages/sync-protocol compile && bun run --cwd packages/invite compile && bun run --cwd packages/ui compile && bun run --cwd apps/extension compile && bun run --cwd apps/sync-server compile && bun run --cwd apps/web compile",
+    "test": "bun test",
     "postinstall": "bun run --cwd apps/extension postinstall"
   }
 }

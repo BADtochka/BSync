@@ -16,7 +16,9 @@
     "postinstall": "wxt prepare"
   },
   "dependencies": {
+    "@bsync/invite": "workspace:*",
     "@bsync/sync-protocol": "workspace:*",
+    "@bsync/ui": "workspace:*",
     "preact": "^10.29.2"
   },
   "devDependencies": {

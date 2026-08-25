@@ -31,6 +31,7 @@ export function SettingsPanel({ state, onBack, onCommit, onResetData }: Settings
   const [domainError, setDomainError] = useState<string | null>(null);
   const [isResetConfirming, setIsResetConfirming] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [debugCopyStatus, setDebugCopyStatus] = useState<string | null>(null);
 
   const domains = state.trustedDomains ?? [];
 
@@ -110,6 +111,36 @@ export function SettingsPanel({ state, onBack, onCommit, onResetData }: Settings
     }
   };
 
+  const copyDebugReport = async () => {
+    const report = {
+      generatedAt: new Date().toISOString(),
+      extension: {
+        enabled: state.enabled,
+        connectionState: state.connectionState,
+        transportStatus: state.transportStatus,
+        roomRole: state.roomRole,
+        roomId: state.roomCode === '000000' ? null : state.roomCode.slice(0, 8),
+        peerCount: state.peerCount,
+        latencyMs: state.latencyMs,
+        followHost: state.followHost,
+        mediaStatus: state.roomMedia ? (state.roomMedia.paused ? 'paused' : 'playing') : 'none',
+        targetHostname: state.targetPage?.hostname ?? null,
+        lastTransportError: state.lastTransportError,
+      },
+      events: state.activity.map(({ at, label, tone }) => ({
+        at,
+        event: label.replace(/(?:https?|wss?):\/\/\S+/gu, '[redacted-url]'),
+        tone,
+      })),
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+      setDebugCopyStatus('Debug report copied');
+    } catch {
+      setDebugCopyStatus('Could not copy debug report');
+    }
+  };
+
   return (
     <section className='settings-panel'>
       <div className='settings-header'>
@@ -117,6 +148,26 @@ export function SettingsPanel({ state, onBack, onCommit, onResetData }: Settings
           Back
         </button>
         <h2>Settings</h2>
+      </div>
+
+      <div className='settings-group'>
+        <div className='settings-field'>
+          <span className='settings-label'>Advanced</span>
+          <label>
+            <span>Default sync server</span>
+            <small>Used when creating rooms. Guests receive their server from the invite.</small>
+            <input
+              value={state.serverUrl}
+              spellcheck={false}
+              onChange={(event) =>
+                onCommit((current) => ({
+                  ...current,
+                  serverUrl: event.currentTarget.value.trim(),
+                }))
+              }
+            />
+          </label>
+        </div>
       </div>
 
       <div className='settings-group'>
@@ -162,6 +213,7 @@ export function SettingsPanel({ state, onBack, onCommit, onResetData }: Settings
               key={position.value}
               type='button'
               className={state.position === position.value ? 'is-active' : ''}
+              aria-pressed={state.position === position.value}
               onClick={() =>
                 onCommit((current) => ({
                   ...current,
@@ -200,6 +252,29 @@ export function SettingsPanel({ state, onBack, onCommit, onResetData }: Settings
             {state.autoSwitchHostContent ? 'On' : 'Off'}
           </button>
         </div>
+
+        <div className='field-row field-row--wide'>
+          <div>
+            <span>Debug mode</span>
+            <small>Enables sanitized diagnostic export. Invite and resume tokens are never included.</small>
+          </div>
+          <button
+            type='button'
+            className={state.debugMode ? 'toggle is-on' : 'toggle'}
+            onClick={() =>
+              onCommit((current) => ({ ...current, debugMode: !current.debugMode }))
+            }
+          >
+            {state.debugMode ? 'On' : 'Off'}
+          </button>
+        </div>
+
+        {state.debugMode ? (
+          <div className='settings-field'>
+            <button type='button' onClick={copyDebugReport}>Copy debug report</button>
+            {debugCopyStatus ? <small role='status'>{debugCopyStatus}</small> : null}
+          </div>
+        ) : null}
       </div>
 
       <div className='settings-group'>
@@ -217,6 +292,9 @@ export function SettingsPanel({ state, onBack, onCommit, onResetData }: Settings
                   {editingIndex === index ? (
                     <div className='trusted-domain-edit'>
                       <input
+                        aria-label={`Edit trusted domain ${domains[index]}`}
+                        aria-invalid={Boolean(domainError)}
+                        aria-describedby={domainError ? 'trusted-domain-error' : undefined}
                         value={editingValue}
                         onInput={(event) => setEditingValue(event.currentTarget.value)}
                         onKeyDown={(event) => {
@@ -267,6 +345,9 @@ export function SettingsPanel({ state, onBack, onCommit, onResetData }: Settings
 
           <div className='trusted-domain-add'>
             <input
+              aria-label='Add trusted domain'
+              aria-invalid={Boolean(domainError)}
+              aria-describedby={domainError ? 'trusted-domain-error' : undefined}
               placeholder='youtube.com'
               value={newDomain}
               onInput={(event) => {
@@ -282,7 +363,7 @@ export function SettingsPanel({ state, onBack, onCommit, onResetData }: Settings
             </button>
           </div>
 
-          {domainError ? <p className='field-error'>{domainError}</p> : null}
+          {domainError ? <p id='trusted-domain-error' className='field-error' role='alert'>{domainError}</p> : null}
         </div>
       </div>
 

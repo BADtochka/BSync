@@ -82,15 +82,27 @@ if (browserName === 'firefox') {
   if (!gecko.data_collection_permissions?.required?.length) {
     throw new Error('Firefox manifest is missing gecko.data_collection_permissions.required.');
   }
+  if (gecko.data_collection_permissions.required.includes('none')) {
+    throw new Error('Firefox manifest cannot declare no collection while relay sync is enabled.');
+  }
 
   const sourcesPath = resolve(outputRoot, `bsync-${packageJson.version}-sources.zip`);
   const sources = await loadZip(sourcesPath);
   const requiredSources = [
     'SOURCE_CODE_REVIEW.md',
+    'BUILD_ENVIRONMENT.txt',
     'package.json',
     'bun.lock',
     'apps/extension/package.json',
+    'apps/web/package.json',
+    'apps/sync-server/package.json',
+    'packages/invite/src/index.ts',
     'packages/sync-protocol/src/index.ts',
+    'packages/ui/src/styles.css',
+    'fonts/PixelGlobal-Regular.otf',
+    'fonts/PixeloidMono.otf',
+    'fonts/PixeloidSans.otf',
+    'fonts/PixeloidSans-Bold.otf',
   ];
   for (const path of requiredSources) {
     if (!sources.zip.file(path)) throw new Error(`${sourcesPath} is missing ${path}.`);

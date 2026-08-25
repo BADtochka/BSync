@@ -1,25 +1,47 @@
 import { storage } from 'wxt/utils/storage';
 import { browser } from 'wxt/browser';
-import { isBsyncWsServerMessage } from '@bsync/sync-protocol';
+import {
+  canonicalRoomPageUrl,
+  isRoomTargetUrl,
+  normalizeSyncUrl,
+  sanitizeObservedPageUrl,
+} from './navigation/normalized-url';
+import { normalizeTrustedDomain } from './navigation/trusted-domain';
+import { createProtocolMessage, isBsyncWsServerMessage } from '@bsync/sync-protocol';
 import type {
   BsyncWsClientMessage,
   BsyncWsServerMessage,
   MediaSyncState,
+  MediaSyncStateV2,
   RoomRole,
+  RoomSnapshotV2,
   RoomTargetPage,
 } from '@bsync/sync-protocol';
 
 export type SyncStatus = 'idle' | 'connecting' | 'synced' | 'paused' | 'error';
 export type TransportStatus = 'offline' | 'connecting' | 'online' | 'error';
+export type ConnectionState =
+  | 'idle'
+  | 'resolving-invite'
+  | 'connecting'
+  | 'joining'
+  | 'synced'
+  | 'reconnecting'
+  | 'degraded'
+  | 'error';
 export type OverlayPosition = 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left';
-export { isBsyncWsServerMessage };
+export { createProtocolMessage, isBsyncWsServerMessage };
 export type {
   BsyncWsClientMessage,
   BsyncWsServerMessage,
   MediaSyncState,
+  MediaSyncStateV2,
   RoomRole,
+  RoomSnapshotV2,
   RoomTargetPage,
 };
+export { canonicalRoomPageUrl, isRoomTargetUrl, normalizeSyncUrl };
+export { normalizeTrustedDomain };
 
 export interface SyncActivity {
   id: string;
@@ -38,10 +60,12 @@ export interface SyncPreferences {
   clientId: string;
   trustedDomains: string[];
   autoSwitchHostContent: boolean;
+  debugMode: boolean;
 }
 
 export interface RoomSessionState {
   status: SyncStatus;
+  connectionState: ConnectionState;
   transportEnabled: boolean;
   transportStatus: TransportStatus;
   roomCode: string;
@@ -52,6 +76,7 @@ export interface RoomSessionState {
   latencyMs: number;
   progressPercent: number;
   roomMedia: MediaSyncState | null;
+  mediaActionRequired: boolean;
   lastSyncedAt: number | null;
   connectedAt: number | null;
   lastTransportError: string | null;
@@ -61,6 +86,20 @@ export interface RoomSessionState {
 }
 
 export interface SyncState extends SyncPreferences, RoomSessionState {}
+
+export interface ProtocolSessionState {
+  roomId: string | null;
+  role: 'host' | 'guest' | null;
+  serverUrl: string | null;
+  inviteToken: string | null;
+  inviteExpiresAt: number | null;
+  resumeToken: string | null;
+  lastSeq: number;
+  pending:
+    | { type: 'create'; targetPage: RoomTargetPage }
+    | { type: 'join'; roomId: string; inviteToken: string; serverUrl: string }
+    | null;
+}
 
 export interface RoomFocusRequest {
   id: string;
@@ -83,6 +122,11 @@ export interface TabSyncState {
 
 export type TabSyncStateMap = Record<string, TabSyncState>;
 
+export type LocalMediaSelection = {
+  status: 'selected' | 'reacquiring' | 'no-candidate';
+  media: MediaSyncState | null;
+};
+
 export type ContentPageSnapshot = Omit<TabSyncState, 'tabId' | 'updatedAt'>;
 
 export type BsyncRuntimeMessage =
@@ -91,8 +135,23 @@ export type BsyncRuntimeMessage =
       payload: ContentPageSnapshot;
     }
   | {
-      type: 'bsync:media-state';
-      payload: MediaSyncState;
+      type: 'bsync:media-candidate-upsert';
+      payload: {
+        documentId: string;
+        mediaKey: string;
+        media: MediaSyncState;
+        readyState: number;
+        visible: boolean;
+        viewportArea: number;
+        lastPlayingAt?: number;
+      };
+    }
+  | {
+      type: 'bsync:media-candidate-remove';
+      payload: {
+        documentId: string;
+        mediaKey: string;
+      };
     }
   | {
       type: 'bsync:media-detach';
@@ -104,6 +163,7 @@ export type BsyncRuntimeMessage =
   | {
       type: 'bsync:media-applied';
       payload: {
+        commandId: string;
         requested: MediaSyncState;
         before: MediaSyncState;
         after: MediaSyncState;
@@ -113,8 +173,10 @@ export type BsyncRuntimeMessage =
   | {
       type: 'bsync:media-apply-failed';
       payload: {
+        commandId: string;
         requested: MediaSyncState;
         reason: string;
+        code?: 'user-action-required';
       };
     }
   | {
@@ -129,11 +191,18 @@ export type BsyncRuntimeMessage =
       type: 'bsync:guest-sync';
     }
   | {
+      type: 'bsync:media-resume';
+    }
+  | {
       type: 'bsync:get-state';
     }
   | {
       type: 'bsync:set-state';
       payload: SyncState;
+    }
+  | {
+      type: 'bsync:patch-state';
+      payload: Partial<SyncState>;
     }
   | {
       type: 'bsync:content-ready';
@@ -147,10 +216,32 @@ export type BsyncStateSyncMessage = {
   payload: SyncState;
 };
 
-export type BsyncContentMessage = {
-  type: 'bsync:media-apply';
-  payload: MediaSyncState;
-};
+export type BsyncContentMessage =
+  | {
+      type: 'bsync:selected-local-media';
+      payload: LocalMediaSelection;
+    }
+  | {
+      type: 'bsync:media-apply';
+      payload: {
+        commandId: string;
+        mediaKey: string;
+        media: MediaSyncState;
+        rttMs?: number;
+      };
+    }
+  | {
+      type: 'bsync:media-apply-pending';
+      payload: {
+        commandId: string;
+        mediaKey: string;
+        media: MediaSyncState;
+        rttMs?: number;
+      };
+    }
+  | {
+      type: 'bsync:media-apply-cancel';
+    };
 
 export const DEFAULT_SYNC_PREFERENCES: SyncPreferences = {
   enabled: true,
@@ -162,10 +253,12 @@ export const DEFAULT_SYNC_PREFERENCES: SyncPreferences = {
   clientId: `client-${Math.random().toString(36).slice(2, 10)}`,
   trustedDomains: [],
   autoSwitchHostContent: true,
+  debugMode: false,
 };
 
 export const DEFAULT_ROOM_SESSION: RoomSessionState = {
   status: 'idle',
+  connectionState: 'idle',
   transportEnabled: false,
   transportStatus: 'offline',
   roomCode: '000000',
@@ -176,6 +269,7 @@ export const DEFAULT_ROOM_SESSION: RoomSessionState = {
   latencyMs: 0,
   progressPercent: 0,
   roomMedia: null,
+  mediaActionRequired: false,
   lastSyncedAt: null,
   connectedAt: null,
   lastTransportError: null,
@@ -197,6 +291,22 @@ export const tabStateItem = storage.defineItem<TabSyncStateMap>('local:bsync-tab
   fallback: {},
 });
 
+export const DEFAULT_PROTOCOL_SESSION: ProtocolSessionState = {
+  roomId: null,
+  role: null,
+  serverUrl: null,
+  inviteToken: null,
+  inviteExpiresAt: null,
+  resumeToken: null,
+  lastSeq: 0,
+  pending: null,
+};
+
+export const protocolSessionItem = storage.defineItem<ProtocolSessionState>(
+  'session:bsync-protocol-session',
+  { fallback: DEFAULT_PROTOCOL_SESSION },
+);
+
 const MIGRATION_FLAG = 'local:bsync-migration-unified-v1';
 const BROWSER_SESSION_MARKER = 'local:bsync-browser-session';
 const LEGACY_BROWSER_SESSION_MARKER = 'session:bsync-browser-alive';
@@ -213,6 +323,7 @@ function extractPreferences(state: SyncState): SyncPreferences {
     trustedDomains: state.trustedDomains ?? DEFAULT_SYNC_PREFERENCES.trustedDomains,
     autoSwitchHostContent:
       state.autoSwitchHostContent ?? DEFAULT_SYNC_PREFERENCES.autoSwitchHostContent,
+    debugMode: state.debugMode ?? DEFAULT_SYNC_PREFERENCES.debugMode,
   };
 }
 
@@ -228,6 +339,7 @@ export function leaveRoomState(state: SyncState): SyncState {
     ...state,
     transportEnabled: false,
     transportStatus: 'offline',
+    connectionState: 'idle',
     connectedAt: null,
     peerCount: 1,
     roomRole: 'none',
@@ -319,6 +431,7 @@ async function migrateToUnifiedSyncStorageOnce(): Promise<void> {
 export async function resetRoomSessionForBrowserStartup(): Promise<void> {
   const current = await syncStateItem.getValue();
   await syncStateItem.setValue(clearRoomSession(resolveSyncState(current)));
+  await protocolSessionItem.setValue(DEFAULT_PROTOCOL_SESSION);
   await storage.removeItem(BROWSER_SESSION_MARKER);
 }
 
@@ -429,6 +542,7 @@ export function resolveSyncState(state: SyncState | null | undefined): SyncState
     trustedDomains: state.trustedDomains ?? DEFAULT_SYNC_STATE.trustedDomains,
     autoSwitchHostContent:
       state.autoSwitchHostContent ?? DEFAULT_SYNC_STATE.autoSwitchHostContent,
+    debugMode: state.debugMode ?? DEFAULT_SYNC_STATE.debugMode,
     activity: state.activity ?? DEFAULT_SYNC_STATE.activity,
   };
 }
@@ -467,12 +581,60 @@ export function isBsyncRuntimeMessage(message: unknown): message is BsyncRuntime
   const candidate = message as BsyncRuntimeMessage;
   return (
     (candidate.type === 'bsync:tab-page' && typeof candidate.payload?.url === 'string') ||
-    (candidate.type === 'bsync:media-state' && typeof candidate.payload?.currentTime === 'number') ||
-    (candidate.type === 'bsync:media-detach' && typeof candidate.payload?.reason === 'string') ||
-    (candidate.type === 'bsync:media-applied' && typeof candidate.payload?.driftSeconds === 'number') ||
-    (candidate.type === 'bsync:media-apply-failed' && typeof candidate.payload?.reason === 'string') ||
+    (candidate.type === 'bsync:media-candidate-upsert' &&
+      typeof candidate.payload?.documentId === 'string' &&
+      typeof candidate.payload?.mediaKey === 'string' &&
+      isMediaSyncState(candidate.payload?.media) &&
+      typeof candidate.payload?.readyState === 'number' &&
+      Number.isFinite(candidate.payload.readyState) &&
+      typeof candidate.payload?.visible === 'boolean' &&
+      typeof candidate.payload?.viewportArea === 'number' &&
+      Number.isFinite(candidate.payload.viewportArea) &&
+      (candidate.payload.lastPlayingAt === undefined ||
+        (typeof candidate.payload.lastPlayingAt === 'number' &&
+          Number.isFinite(candidate.payload.lastPlayingAt)))) ||
+    (candidate.type === 'bsync:media-candidate-remove' &&
+      typeof candidate.payload?.documentId === 'string' &&
+      typeof candidate.payload?.mediaKey === 'string') ||
+    (candidate.type === 'bsync:media-detach' &&
+      typeof candidate.payload?.reason === 'string' &&
+      isMediaSyncState(candidate.payload?.media)) ||
+    (candidate.type === 'bsync:media-applied' &&
+      typeof candidate.payload?.commandId === 'string' &&
+      typeof candidate.payload?.driftSeconds === 'number' &&
+      isMediaSyncState(candidate.payload?.requested) &&
+      isMediaSyncState(candidate.payload?.before) &&
+      isMediaSyncState(candidate.payload?.after)) ||
+    (candidate.type === 'bsync:media-apply-failed' &&
+      typeof candidate.payload?.commandId === 'string' &&
+      typeof candidate.payload?.reason === 'string' &&
+      isMediaSyncState(candidate.payload?.requested) &&
+      (candidate.payload.code === undefined || candidate.payload.code === 'user-action-required')) ||
     (candidate.type === 'bsync:focus-open' && typeof candidate.payload?.targetPage?.url === 'string') ||
-    candidate.type === 'bsync:guest-sync'
+    candidate.type === 'bsync:guest-sync' ||
+    candidate.type === 'bsync:media-resume'
+  );
+}
+
+function isMediaSyncState(value: unknown): value is MediaSyncState {
+  if (!value || typeof value !== 'object') return false;
+  const media = value as MediaSyncState;
+
+  return (
+    typeof media.url === 'string' &&
+    typeof media.mediaId === 'string' &&
+    typeof media.paused === 'boolean' &&
+    typeof media.currentTime === 'number' &&
+    Number.isFinite(media.currentTime) &&
+    (media.duration === null ||
+      (typeof media.duration === 'number' && Number.isFinite(media.duration))) &&
+    typeof media.playbackRate === 'number' &&
+    Number.isFinite(media.playbackRate) &&
+    typeof media.volume === 'number' &&
+    Number.isFinite(media.volume) &&
+    typeof media.muted === 'boolean' &&
+    typeof media.updatedAt === 'number' &&
+    Number.isFinite(media.updatedAt)
   );
 }
 
@@ -483,78 +645,17 @@ export function getTabPageLabel(tabState: TabSyncState | null | undefined): stri
   return tabState.hostname ? `${title} · ${tabState.hostname}` : title;
 }
 
-function stripUrlHash(url: string): string {
-  const hashIndex = url.indexOf('#');
-  return hashIndex === -1 ? url : url.slice(0, hashIndex);
-}
-
-function normalizeRoomPath(pathname: string): string {
-  if (!pathname) return '/';
-  return pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
-}
-
-function normalizeRoomQuery(query: string | undefined): string {
-  if (!query) return '';
-
-  return query
-    .split('&')
-    .filter(Boolean)
-    .sort((left, right) => {
-      const leftKey = left.split('=', 1)[0] ?? '';
-      const rightKey = right.split('=', 1)[0] ?? '';
-      return leftKey.localeCompare(rightKey) || left.localeCompare(right);
-    })
-    .join('&');
-}
-
-function normalizeRoomAuthority(authority: string): string | null {
-  const hostPort = authority.slice(authority.lastIndexOf('@') + 1);
-  if (!hostPort) return null;
-
-  if (hostPort.startsWith('[')) {
-    const closingBracketIndex = hostPort.indexOf(']');
-    if (closingBracketIndex === -1) return null;
-
-    return `${hostPort.slice(0, closingBracketIndex + 1).toLowerCase()}${hostPort.slice(
-      closingBracketIndex + 1,
-    )}`;
-  }
-
-  const colonIndex = hostPort.lastIndexOf(':');
-  const hasPort = colonIndex > -1 && hostPort.indexOf(':') === colonIndex;
-  const hostname = (hasPort ? hostPort.slice(0, colonIndex) : hostPort)
-    .replace(/^www\./i, '')
-    .toLowerCase();
-  const port = hasPort ? hostPort.slice(colonIndex) : '';
-
-  return hostname ? `${hostname}${port}` : null;
-}
-
-export function canonicalRoomPageUrl(url: string): string | null {
-  const withoutHash = stripUrlHash(url.trim());
-  const match = withoutHash.match(/^([a-z][a-z0-9+.-]*:)\/\/([^/?#]*)([^?#]*)(?:\?([^#]*))?$/i);
-  if (!match) return null;
-
-  const [, protocol, authority, rawPathname, rawQuery] = match;
-  const normalizedAuthority = normalizeRoomAuthority(authority);
-  if (!normalizedAuthority) return null;
-
-  const pathname = normalizeRoomPath(rawPathname);
-  const query = normalizeRoomQuery(rawQuery);
-
-  return `${protocol.toLowerCase()}//${normalizedAuthority}${pathname}${query ? `?${query}` : ''}`;
-}
-
-export function normalizeSyncUrl(url: string): string {
-  return canonicalRoomPageUrl(url) ?? stripUrlHash(url.trim());
-}
-
 export function createRoomTargetPage(page: Pick<TabSyncState, 'title' | 'url' | 'hostname'>): RoomTargetPage {
+  const url = sanitizeObservedPageUrl(page.url);
+  const parsed = new URL(url);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Open an HTTP(S) page before creating or focusing a room');
+  }
   return {
-    title: page.title || page.hostname || 'Untitled page',
-    url: page.url,
-    normalizedUrl: normalizeSyncUrl(page.url),
-    hostname: page.hostname,
+    title: page.title || parsed.hostname || 'Untitled page',
+    url,
+    normalizedUrl: normalizeSyncUrl(url),
+    hostname: parsed.hostname,
     createdAt: Date.now(),
   };
 }
@@ -575,24 +676,6 @@ export function mergeRoomTargetPageForFocus(
   }
 
   return nextTarget;
-}
-
-export function isRoomTargetUrl(targetPage: RoomTargetPage | null | undefined, url: string): boolean {
-  if (!targetPage) return false;
-
-  const current = new Set([normalizeSyncUrl(url), stripUrlHash(url.trim())]);
-  const target = new Set([
-    normalizeSyncUrl(targetPage.url),
-    normalizeSyncUrl(targetPage.normalizedUrl),
-    stripUrlHash(targetPage.url.trim()),
-    stripUrlHash(targetPage.normalizedUrl.trim()),
-  ]);
-
-  for (const candidate of current) {
-    if (target.has(candidate)) return true;
-  }
-
-  return false;
 }
 
 export function resolveInRoomSyncStatus(
@@ -715,6 +798,19 @@ export async function getSyncState(): Promise<SyncState> {
 export async function updateSyncState(updater: (state: SyncState) => SyncState): Promise<SyncState> {
   const current = resolveSyncState(await syncStateItem.getValue());
   const next = updater(current);
+  if (isContentScriptContext()) {
+    const patch = Object.fromEntries(
+      Object.entries(next).filter(([key, value]) => !Object.is(current[key as keyof SyncState], value)),
+    ) as Partial<SyncState>;
+    const response = await browser.runtime.sendMessage({
+      type: 'bsync:patch-state',
+      payload: patch,
+    });
+    if (response?.type === 'bsync:state-sync' && response.payload) {
+      return resolveSyncState(response.payload);
+    }
+    return next;
+  }
   await syncStateItem.setValue(next);
   return next;
 }
@@ -746,19 +842,6 @@ export function formatTimeAgo(timestamp: number | null): string {
 
   const hours = Math.round(minutes / 60);
   return `${hours}h ago`;
-}
-
-export function normalizeTrustedDomain(input: string): string | null {
-  const trimmed = input.trim().toLowerCase();
-  if (!trimmed) return null;
-
-  try {
-    const withProtocol = trimmed.includes('://') ? trimmed : `https://${trimmed}`;
-    return new URL(withProtocol).hostname;
-  } catch {
-    const hostname = trimmed.split('/')[0]?.split(':')[0];
-    return hostname || null;
-  }
 }
 
 export function parseTrustedDomainsInput(input: string): string[] {
@@ -867,6 +950,15 @@ export async function resolveTrustedOpenTabId(
     if (isRoomTargetUrl(targetPage, tab.url)) return tab.id;
   }
 
+  if (preferredTabId != null) {
+    try {
+      await browser.tabs.get(preferredTabId);
+      return preferredTabId;
+    } catch {
+      // Preferred tab is gone.
+    }
+  }
+
   const targetHostname = targetPage.hostname || getHostnameFromUrl(targetPage.url);
   if (targetHostname && isTrustedHostname(targetHostname, trustedDomains)) {
     for (const tab of tabs) {
@@ -875,15 +967,6 @@ export async function resolveTrustedOpenTabId(
       if (tabHostname && isTrustedHostname(tabHostname, trustedDomains)) {
         return tab.id;
       }
-    }
-  }
-
-  if (preferredTabId != null) {
-    try {
-      await browser.tabs.get(preferredTabId);
-      return preferredTabId;
-    } catch {
-      // Preferred tab is gone.
     }
   }
 

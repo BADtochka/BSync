@@ -4,39 +4,50 @@ import {
     createRoomTargetPage,
     mergeRoomTargetPageForFocus,
     formatTimeAgo,
-    generateRoomCode,
     getFocusRequestTitle,
     getRoomTargetLabel,
     getTabPageLabel,
-    leaveRoomState,
-    normalizeRoomCode,
     openRoomTargetPage,
+    protocolSessionItem,
     resetExtensionData,
     resolveFocusRequestSource,
-    resolveInRoomSyncStatus,
     statusLabel,
     syncStateItem,
     tabStateItem,
     type SyncState,
+    type ProtocolSessionState,
+    type ConnectionState,
+    type RoomTargetPage,
     type TabSyncState,
-    type TransportStatus,
 } from '@/lib/sync-state';
 import { useEffect, useState } from 'preact/hooks';
+import { createInviteUrl, decodeInviteEnvelope } from '@bsync/invite';
 import './App.css';
 import { SettingsPanel } from './SettingsPanel';
 import logoUrl from '/logo.svg';
 
-function transportLabel(status: TransportStatus): string {
+const ALLOW_LOCAL_INVITES =
+  import.meta.env.DEV || import.meta.env.WXT_ALLOW_LOCAL_ENDPOINTS === 'true';
+
+function connectionLabel(status: ConnectionState): string {
   switch (status) {
+    case 'resolving-invite':
+      return 'Resolving invite';
     case 'connecting':
       return 'Connecting';
-    case 'online':
-      return 'Online';
+    case 'joining':
+      return 'Joining';
+    case 'synced':
+      return 'Synced';
+    case 'reconnecting':
+      return 'Reconnecting';
+    case 'degraded':
+      return 'Degraded';
     case 'error':
       return 'Error';
-    case 'offline':
+    case 'idle':
     default:
-      return 'Offline';
+      return 'Idle';
   }
 }
 
@@ -53,6 +64,16 @@ function getHostname(url: string | undefined): string {
     return new URL(url).hostname;
   } catch {
     return '';
+  }
+}
+
+function getServerLabel(url: string | null | undefined): string {
+  if (!url) return 'Not configured';
+
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
   }
 }
 
@@ -75,6 +96,9 @@ function App() {
   const [tabStates, setTabStates] = useState<Record<string, TabSyncState>>({});
   const [activeBrowserTab, setActiveBrowserTab] = useState<ActiveBrowserTab | null>(null);
   const [joinCode, setJoinCode] = useState('');
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [roomActionPending, setRoomActionPending] = useState(false);
+  const [protocolSession, setProtocolSession] = useState<ProtocolSessionState | null>(null);
   const [popupView, setPopupView] = useState<'main' | 'settings'>('main');
   const [trustFocusSite, setTrustFocusSite] = useState(false);
 
@@ -99,6 +123,11 @@ function App() {
       mounted = false;
       unwatch();
     };
+  }, []);
+
+  useEffect(() => {
+    protocolSessionItem.getValue().then(setProtocolSession).catch(console.error);
+    return protocolSessionItem.watch(setProtocolSession);
   }, []);
 
   useEffect(() => {
@@ -163,8 +192,8 @@ function App() {
     label?: string,
     tone: Parameters<typeof addActivity>[2] = 'info',
   ) => {
-    if (!state) return;
-    const next = updater(state);
+    const current = await syncStateItem.getValue();
+    const next = updater(current);
     await syncStateItem.setValue(label ? addActivity(next, label, tone) : next);
   };
 
@@ -194,6 +223,7 @@ function App() {
   };
 
   const hostRoom = async () => {
+    if (roomActionPending) return;
     const currentTabState = getActiveTabState();
     if (!currentTabState?.url) {
       await commit(
@@ -207,91 +237,79 @@ function App() {
       return;
     }
 
-    const targetPage = createRoomTargetPage(currentTabState);
-    const roomCode = generateRoomCode();
-    const transportStatus: TransportStatus =
-      state?.transportStatus === 'online' ? 'online' : 'connecting';
-    const nextRoomState = {
-      roomRole: 'host' as const,
-      transportEnabled: true,
-      transportStatus,
-    };
-
-    await commit(
-      (current) => ({
-        ...current,
-        enabled: true,
-        overlayVisible: true,
-        ...nextRoomState,
-        roomCode,
-        followHost: true,
-        detachedReason: null,
-        status: resolveInRoomSyncStatus(
-          { ...current, ...nextRoomState },
-          transportStatus,
-        ),
-        targetPage,
-        pendingFocusRequest: null,
-        progressPercent: 0,
-        roomMedia: null,
-        lastSyncedAt: null,
-      }),
-      `Room ${roomCode} created`,
-      'success',
-    );
+    let targetPage: RoomTargetPage;
+    try {
+      targetPage = createRoomTargetPage(currentTabState);
+    } catch (error) {
+      await commit(
+        (current) => ({ ...current, status: 'error' }),
+        error instanceof Error ? error.message : 'Open an HTTP(S) page before creating a room',
+        'error',
+      );
+      return;
+    }
+    setRoomActionPending(true);
+    try {
+      await browser.runtime.sendMessage({
+        type: 'bsync:room-create',
+        payload: { targetPage },
+      });
+    } finally {
+      setRoomActionPending(false);
+    }
   };
 
   const joinRoom = async () => {
-    const roomCode = normalizeRoomCode(joinCode);
-    if (roomCode.length !== 6 || roomCode === '000000') {
+    if (roomActionPending) return;
+    let invite;
+    try {
+      invite = decodeInviteEnvelope(joinCode, { allowLocal: ALLOW_LOCAL_INVITES });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Invite is invalid';
+      setJoinError(message);
       await commit(
         (current) => ({
           ...current,
           status: 'error',
         }),
-        'Enter a valid 6 digit room code',
+        message,
         'error',
       );
       return;
     }
 
-    const transportStatus: TransportStatus =
-      state?.transportStatus === 'online' ? 'online' : 'connecting';
-    const nextRoomState = {
-      roomRole: 'guest' as const,
-      transportEnabled: true,
-      transportStatus,
-    };
-
-    await commit(
-      (current) => ({
-        ...current,
-        enabled: true,
-        overlayVisible: true,
-        ...nextRoomState,
-        roomCode,
-        followHost: true,
-        detachedReason: null,
-        targetPage: null,
-        pendingFocusRequest: null,
-        roomMedia: null,
-        status: resolveInRoomSyncStatus(
-          { ...current, ...nextRoomState },
-          transportStatus,
-        ),
-        peerCount: 1,
-        lastTransportError: null,
-      }),
-      `Joining room ${roomCode}`,
-      'info',
-    );
+    setJoinError(null);
+    setRoomActionPending(true);
+    try {
+      await browser.runtime.sendMessage({
+        type: 'bsync:room-join',
+        payload: {
+          roomId: invite.roomId,
+          inviteToken: invite.inviteToken,
+          serverUrl: invite.serverUrl,
+        },
+      });
+    } finally {
+      setRoomActionPending(false);
+    }
   };
 
   const leaveRoom = async () => {
+    await browser.runtime.sendMessage({ type: 'bsync:room-leave' });
+  };
+
+  const toggleExtension = async () => {
+    if (state?.enabled) {
+      if (isInRoom) await browser.runtime.sendMessage({ type: 'bsync:room-leave' });
+      const current = await syncStateItem.getValue();
+      await syncStateItem.setValue({ ...current, enabled: false, status: 'paused' });
+      return;
+    }
+
     await commit(
-      leaveRoomState,
-      'Left room',
-      'warning',
+      (current) => ({ ...current, enabled: true, overlayVisible: true, status: 'idle' }),
+      'Extension enabled',
+      'success',
     );
   };
 
@@ -301,7 +319,75 @@ function App() {
 
   const activeTabState = activeBrowserTab?.id == null ? null : getActiveTabState();
   const roomRole = state.roomRole ?? 'none';
-  const isInRoom = roomRole !== 'none';
+  const isInRoom = roomRole !== 'none' || state.transportEnabled;
+  const isDetached = roomRole === 'guest' && !state.followHost;
+  const connectionUnhealthy =
+    state.connectionState === 'connecting' ||
+    state.connectionState === 'joining' ||
+    state.connectionState === 'reconnecting' ||
+    state.connectionState === 'degraded' ||
+    state.connectionState === 'error';
+  const healthyPaused = state.status === 'paused' && state.transportStatus === 'online';
+  const syncPresentation = isDetached
+    ? { label: 'Desynced', tone: 'error' }
+    : connectionUnhealthy
+      ? {
+          label: connectionLabel(state.connectionState),
+          tone: state.connectionState === 'error' ? 'error' : 'connecting',
+        }
+      : healthyPaused
+      ? { label: 'Synced | Paused', tone: 'synced' }
+      : { label: statusLabel(state.status), tone: state.status };
+  const roomCredential =
+    protocolSession?.roomId &&
+    protocolSession.inviteToken &&
+    protocolSession.inviteExpiresAt &&
+    protocolSession.serverUrl
+      ? (() => {
+          try {
+            const publicWebOrigin =
+              import.meta.env.WXT_PUBLIC_WEB_ORIGIN ||
+              (ALLOW_LOCAL_INVITES ? 'http://localhost:4175' : '');
+            if (!publicWebOrigin) return null;
+            return createInviteUrl(
+              publicWebOrigin,
+              {
+                v: 2,
+                serverUrl: protocolSession.serverUrl,
+                roomId: protocolSession.roomId,
+                inviteToken: protocolSession.inviteToken,
+                expiresAt: protocolSession.inviteExpiresAt,
+              },
+              { allowLocal: ALLOW_LOCAL_INVITES },
+            );
+          } catch {
+            return null;
+          }
+        })()
+      : null;
+  const share = (navigator as Navigator & {
+    share?: (data: ShareData) => Promise<void>;
+  }).share;
+
+  const copyInvite = async () => {
+    if (!roomCredential) return;
+    try {
+      await navigator.clipboard.writeText(roomCredential);
+      await commit((current) => current, 'Invite copied', 'success');
+    } catch {
+      await commit((current) => current, 'Could not copy invite', 'error');
+    }
+  };
+
+  const shareInvite = async () => {
+    if (!roomCredential || typeof share !== 'function') return;
+    try {
+      await share.call(navigator, { title: 'Join my BSync room', url: roomCredential });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      await commit((current) => current, 'Could not share invite', 'error');
+    }
+  };
 
   const followHost = async () => {
     await commit(
@@ -329,11 +415,21 @@ function App() {
       return;
     }
 
-    const targetPage = mergeRoomTargetPageForFocus(
-      state?.targetPage ?? null,
-      createRoomTargetPage(currentTabState),
-      currentTabState.url,
-    );
+    let targetPage: RoomTargetPage;
+    try {
+      targetPage = mergeRoomTargetPageForFocus(
+        state?.targetPage ?? null,
+        createRoomTargetPage(currentTabState),
+        currentTabState.url,
+      );
+    } catch (error) {
+      await commit(
+        (current) => ({ ...current, status: 'error' }),
+        error instanceof Error ? error.message : 'Open an HTTP(S) page before focusing the room',
+        'error',
+      );
+      return;
+    }
 
     await commit(
       (current) => ({
@@ -358,12 +454,6 @@ function App() {
     const trustedDomains = trustFocusSite
       ? addTrustedDomain(state.trustedDomains ?? [], targetPage.hostname || targetPage.url)
       : (state.trustedDomains ?? []);
-    const resolvedMode = await openRoomTargetPage(
-      targetPage,
-      mode,
-      trustedDomains,
-    );
-
     await commit(
       (current) => ({
         ...current,
@@ -376,10 +466,11 @@ function App() {
           : current.trustedDomains,
       }),
       trustFocusSite
-        ? `Focused room page ${resolvedMode === 'new' ? 'in new tab' : 'in current tab'} and trusted ${targetPage.hostname || 'site'}`
-        : `Focused room page ${resolvedMode === 'new' ? 'in new tab' : 'in current tab'}`,
+        ? `Opening room page and trusted ${targetPage.hostname || 'site'}`
+        : 'Opening room page',
       'success',
     );
+    await openRoomTargetPage(targetPage, mode, trustedDomains);
     setTrustFocusSite(false);
   };
 
@@ -402,7 +493,7 @@ function App() {
         <div className='brand'>
           <img src={logoUrl} alt='' className='brand-logo' />
           <div>
-            <h1>BSync</h1>
+            <h1 className='bsync-wordmark'>BSync</h1>
           </div>
         </div>
         <div className='hero-actions'>
@@ -417,22 +508,7 @@ function App() {
           <button
             type='button'
             className={state.enabled ? 'power is-on' : 'power'}
-          onClick={() =>
-            commit(
-              (current) => ({
-                ...(current.enabled ? leaveRoomState(current) : current),
-                enabled: !current.enabled,
-                overlayVisible: !current.enabled ? true : current.overlayVisible,
-                status: !current.enabled ? 'idle' : 'paused',
-              }),
-              state.enabled
-                ? isInRoom
-                  ? 'Extension disabled and room left'
-                  : 'Extension paused'
-                : 'Extension enabled',
-              state.enabled ? 'warning' : 'success',
-            )
-          }
+          onClick={toggleExtension}
           aria-label={state.enabled ? 'Disable BSync' : 'Enable BSync'}
         >
           {state.enabled ? 'On' : 'Off'}
@@ -442,12 +518,25 @@ function App() {
 
       {isInRoom ? (
         <section className='current-room'>
-          <span>{roomRole === 'host' ? 'Hosting room' : 'Joined room'}</span>
-          <strong>{state.roomCode}</strong>
+          <span>{roomRole === 'host' ? 'Hosting room' : roomRole === 'guest' ? 'Joined room' : 'Connecting'}</span>
+          <strong>{state.roomCode === '000000' ? 'Awaiting server' : state.roomCode}</strong>
+          {roomRole === 'host' && roomCredential ? (
+            <div className='button-row'>
+              <button type='button' className='primary' onClick={copyInvite}>Copy invite</button>
+              {typeof share === 'function' ? <button type='button' onClick={shareInvite}>Share</button> : null}
+            </div>
+          ) : null}
+          {roomRole === 'host' && protocolSession?.roomId && !roomCredential ? (
+            <p className='invite-error' role='alert'>
+              Invite unavailable: public web origin or room credentials are not configured.
+            </p>
+          ) : null}
           <div className='current-room-status'>
-            <span className={`status-pill status-pill--${state.status}`}>{statusLabel(state.status)}</span>
+            <span className={`status-pill status-pill--${syncPresentation.tone}`}>
+              {syncPresentation.label}
+            </span>
             <span className={`transport-pill transport-pill--${state.transportStatus}`}>
-              {transportLabel(state.transportStatus)}
+              Connection: {connectionLabel(state.connectionState)}
             </span>
           </div>
           {roomRole === 'guest' ? (
@@ -502,23 +591,11 @@ function App() {
             <span>Name</span>
             <input
               value={state.displayName}
+              maxLength={80}
               onChange={(event) =>
                 commit((current) => ({
                   ...current,
-                  displayName: event.currentTarget.value,
-                }))
-              }
-            />
-          </label>
-
-          <label>
-            <span>Server</span>
-            <input
-              value={state.serverUrl}
-              onChange={(event) =>
-                commit((current) => ({
-                  ...current,
-                  serverUrl: event.currentTarget.value.trim(),
+                  displayName: event.currentTarget.value.slice(0, 80),
                 }))
               }
             />
@@ -529,28 +606,59 @@ function App() {
               <span>Create room</span>
               <small>Uses the active tab as the shared page.</small>
             </div>
-            <button type='button' className='primary' onClick={hostRoom}>
-              Create
+            <button type='button' className='primary' onClick={hostRoom} disabled={roomActionPending}>
+              {roomActionPending ? 'Creating' : 'Create'}
             </button>
           </div>
 
           <div className='join-box'>
             <label>
-              <span>Join room</span>
-              <input
-                inputMode='numeric'
-                maxLength={6}
-                placeholder='6 digit code'
+               <span>Join from invite</span>
+               <input
+                id='join-invite'
+                placeholder='Paste BSync invite URL'
+                maxLength={4096}
                 value={joinCode}
-                onChange={(event) => setJoinCode(event.currentTarget.value.replace(/\D/g, '').slice(0, 6))}
+                aria-invalid={Boolean(joinError)}
+                aria-describedby={joinError ? 'join-invite-error' : undefined}
+                onChange={(event) => {
+                  setJoinCode(event.currentTarget.value.trim());
+                  setJoinError(null);
+                }}
               />
             </label>
-            <button type='button' onClick={joinRoom}>
-              Join
+            <button type='button' onClick={joinRoom} disabled={roomActionPending}>
+              {roomActionPending ? 'Joining' : 'Join'}
             </button>
+            {joinError ? (
+              <p id='join-invite-error' className='invite-error' role='alert'>
+                {joinError}
+              </p>
+            ) : null}
           </div>
         </section>
       )}
+
+      <section className='system-summary' aria-label='Connection summary'>
+        <div>
+          <span>Connection</span>
+          <strong>{connectionLabel(state.connectionState)}</strong>
+        </div>
+        <div>
+          <span>Role</span>
+          <strong>{roomRole === 'none' ? 'Idle' : roomRole}</strong>
+        </div>
+        <div>
+          <span>Server</span>
+          <strong title={protocolSession?.serverUrl ?? state.serverUrl}>
+            {getServerLabel(protocolSession?.serverUrl ?? state.serverUrl)}
+          </strong>
+        </div>
+        <div>
+          <span>Media</span>
+          <strong>{state.roomMedia ? (state.roomMedia.paused ? 'Paused' : 'Playing') : 'None'}</strong>
+        </div>
+      </section>
 
       <section className='metrics'>
         <div>
