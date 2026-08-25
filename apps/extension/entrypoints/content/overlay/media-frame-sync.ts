@@ -12,6 +12,7 @@ const MEDIA_CONTROL_EVENTS = ['play', 'pause', 'seeking', 'seeked', 'ratechange'
 const USER_INTENT_WINDOW_MS = 2500;
 const DETACH_COOLDOWN_MS = 1200;
 const SEEK_DETACH_SECONDS = 0.75;
+const MEDIA_LOSS_GRACE_MS = 3000;
 
 export type MediaFrameSyncOptions = {
   onLocalMediaChange?: (media: MediaSyncState | null) => void;
@@ -20,6 +21,12 @@ export type MediaFrameSyncOptions = {
 type LocalMediaListener = (media: MediaSyncState | null) => void;
 
 const topFrameLocalMediaListeners = new Set<LocalMediaListener>();
+const topFrameMediaByFrame = new Map<
+  number,
+  { media: MediaSyncState; missingSince: number | null }
+>();
+let selectedTopFrameMediaFrameId: number | null = null;
+let topFrameMediaGraceTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function subscribeTopFrameLocalMedia(listener: LocalMediaListener): () => void {
   if (!isTopFrame()) return () => {};
@@ -36,6 +43,70 @@ function notifyTopFrameLocalMedia(media: MediaSyncState | null) {
   }
 }
 
+function selectTopFrameLocalMedia(): MediaSyncState | null {
+  const now = Date.now();
+  for (const [frameId, candidate] of topFrameMediaByFrame) {
+    if (candidate.missingSince != null && now - candidate.missingSince >= MEDIA_LOSS_GRACE_MS) {
+      topFrameMediaByFrame.delete(frameId);
+      if (selectedTopFrameMediaFrameId === frameId) selectedTopFrameMediaFrameId = null;
+    }
+  }
+
+  if (selectedTopFrameMediaFrameId != null) {
+    const selected = topFrameMediaByFrame.get(selectedTopFrameMediaFrameId);
+    const hasOtherPlayingCandidate = [...topFrameMediaByFrame.entries()].some(
+      ([frameId, candidate]) => frameId !== selectedTopFrameMediaFrameId && !candidate.media.paused,
+    );
+    if (selected && (!selected.media.paused || !hasOtherPlayingCandidate)) return selected.media;
+  }
+
+  const next = [...topFrameMediaByFrame.entries()].sort((left, right) => {
+    if (left[1].media.paused !== right[1].media.paused) return left[1].media.paused ? 1 : -1;
+    return (right[1].media.duration ?? 0) - (left[1].media.duration ?? 0);
+  })[0];
+  selectedTopFrameMediaFrameId = next?.[0] ?? null;
+  return next?.[1].media ?? null;
+}
+
+function scheduleTopFrameMediaPrune() {
+  if (topFrameMediaGraceTimer) clearTimeout(topFrameMediaGraceTimer);
+  const now = Date.now();
+  const nextExpiry = [...topFrameMediaByFrame.values()].reduce<number | null>(
+    (earliest, candidate) => {
+      if (candidate.missingSince == null) return earliest;
+      const expiresAt = candidate.missingSince + MEDIA_LOSS_GRACE_MS;
+      return earliest == null ? expiresAt : Math.min(earliest, expiresAt);
+    },
+    null,
+  );
+  if (nextExpiry == null) {
+    topFrameMediaGraceTimer = null;
+    return;
+  }
+
+  topFrameMediaGraceTimer = setTimeout(() => {
+    topFrameMediaGraceTimer = null;
+    notifyTopFrameLocalMedia(selectTopFrameLocalMedia());
+    scheduleTopFrameMediaPrune();
+  }, Math.max(0, nextExpiry - now));
+}
+
+function updateTopFrameLocalMedia(frameId: number, media: MediaSyncState | null) {
+  if (!isTopFrame()) return;
+
+  if (media) {
+    topFrameMediaByFrame.set(frameId, { media, missingSince: null });
+  } else {
+    const current = topFrameMediaByFrame.get(frameId);
+    if (current && current.missingSince == null) {
+      current.missingSince = Date.now();
+    }
+  }
+
+  scheduleTopFrameMediaPrune();
+  notifyTopFrameLocalMedia(selectTopFrameLocalMedia());
+}
+
 function reportLocalMedia(
   media: MediaSyncState | null,
   options: MediaFrameSyncOptions,
@@ -43,11 +114,9 @@ function reportLocalMedia(
   options.onLocalMediaChange?.(media);
 
   if (isTopFrame()) {
-    notifyTopFrameLocalMedia(media);
+    updateTopFrameLocalMedia(0, media);
     return;
   }
-
-  if (!media) return;
 
   browser.runtime
     .sendMessage({
@@ -132,7 +201,7 @@ async function applyMediaState(media: HTMLMediaElement, remoteState: MediaSyncSt
   }
 
   if (!remoteState.paused && media.paused) {
-    await media.play().catch(() => undefined);
+    await media.play();
   }
 }
 
@@ -159,6 +228,7 @@ export function startMediaFrameSync(options: MediaFrameSyncOptions = {}): () => 
   let userIntentUntil = 0;
   let userIntentMediaTime: number | null = null;
   let lastDetachSentAt = 0;
+  let lastPrimaryMediaId = '';
   let cleanupMediaListeners: (() => void) | undefined;
   let mediaScanTimer: ReturnType<typeof setInterval> | null = null;
   let progressTimer: ReturnType<typeof setInterval> | null = null;
@@ -190,12 +260,17 @@ export function startMediaFrameSync(options: MediaFrameSyncOptions = {}): () => 
     }
 
     const nextMediaState = getMediaState(media);
+    if (nextMediaState.mediaId !== lastPrimaryMediaId) {
+      lastPrimaryMediaId = nextMediaState.mediaId;
+      guestMediaReadySent = false;
+    }
     reportLocalMedia(nextMediaState, options);
 
     if (latestState.roomRole !== 'host') return;
     if (Date.now() < suppressMediaPublishUntil) return;
 
     const publishKey = [
+      nextMediaState.mediaId,
       nextMediaState.paused,
       Math.round(nextMediaState.currentTime),
       nextMediaState.playbackRate,
@@ -314,8 +389,7 @@ export function startMediaFrameSync(options: MediaFrameSyncOptions = {}): () => 
     if (!getPrimaryMediaElement()) return;
 
     const topUrl = getTopFrameUrl();
-    const pageUrl = topUrl ?? location.href;
-    if (!isRoomTargetUrl(latestState.targetPage, pageUrl)) return;
+    if (topUrl && !isRoomTargetUrl(latestState.targetPage, topUrl)) return;
     if (guestMediaReadySent) return;
 
     guestMediaReadySent = true;
@@ -327,30 +401,41 @@ export function startMediaFrameSync(options: MediaFrameSyncOptions = {}): () => 
     if (!latestState || !isFrameRoomBound(latestState)) return;
 
     if (!message || typeof message !== 'object') return;
-    const candidate = message as { type?: string; payload?: MediaSyncState };
+    const candidate = message as {
+      type?: string;
+      payload?: MediaSyncState | { frameId?: number; media?: MediaSyncState | null };
+    };
 
     if (candidate.type === 'bsync:frame-local-media' && isTopFrame()) {
-      notifyTopFrameLocalMedia(candidate.payload ?? null);
+      const payload = candidate.payload;
+      if (payload && 'frameId' in payload) {
+        updateTopFrameLocalMedia(payload.frameId ?? -1, payload.media ?? null);
+      }
       return;
     }
 
-    if (candidate.type !== 'bsync:media-apply' || !candidate.payload) return;
+    if (
+      candidate.type !== 'bsync:media-apply' ||
+      !candidate.payload ||
+      'frameId' in candidate.payload
+    ) return;
 
+    const requested = candidate.payload as MediaSyncState;
     const media = getPrimaryMediaElement();
     if (!media) return;
 
     const before = getMediaState(media);
     suppressMediaPublishUntil = Date.now() + 1200;
-    applyMediaState(media, candidate.payload)
+    applyMediaState(media, requested)
       .then(() => {
         const after = getMediaState(media);
         return browser.runtime.sendMessage({
           type: 'bsync:media-applied',
           payload: {
-            requested: candidate.payload!,
+            requested,
             before,
             after,
-            driftSeconds: getMediaDriftSeconds(candidate.payload!, after),
+            driftSeconds: getMediaDriftSeconds(requested, after),
           },
         });
       })
@@ -359,7 +444,7 @@ export function startMediaFrameSync(options: MediaFrameSyncOptions = {}): () => 
           .sendMessage({
             type: 'bsync:media-apply-failed',
             payload: {
-              requested: candidate.payload!,
+              requested,
               reason: error instanceof Error ? error.message : 'Media apply failed',
             },
           })
@@ -400,6 +485,7 @@ export function startMediaFrameSync(options: MediaFrameSyncOptions = {}): () => 
   mediaScanTimer = setInterval(() => {
     if (!shouldScanMedia(stateRef, roomTargetSeenKey)) return;
     restartMediaScan();
+    void maybeSendGuestSync();
   }, 1500);
   progressTimer = setInterval(() => {
     if (!shouldScanMedia(stateRef, roomTargetSeenKey)) return;
@@ -415,10 +501,16 @@ export function startMediaFrameSync(options: MediaFrameSyncOptions = {}): () => 
   document.addEventListener('touchend', checkUserDrivenTimeShift, true);
 
   return () => {
+    if (!isTopFrame()) {
+      browser.runtime
+        .sendMessage({ type: 'bsync:frame-local-media', payload: null })
+        .catch(() => undefined);
+    }
     unwatch();
     cleanupMediaListeners?.();
     if (mediaScanTimer) clearInterval(mediaScanTimer);
     if (progressTimer) clearInterval(progressTimer);
+    if (isTopFrame() && topFrameMediaGraceTimer) clearTimeout(topFrameMediaGraceTimer);
     browser.runtime.onMessage.removeListener(messageListener);
     document.removeEventListener('pointerdown', markUserIntent, true);
     document.removeEventListener('pointerup', checkUserDrivenTimeShift, true);

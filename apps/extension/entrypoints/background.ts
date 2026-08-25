@@ -453,6 +453,10 @@ export default defineBackground(() => {
         const latencyMs = Math.max(1, Date.now() - message.sentAt);
         await patchSyncState((state) => ({
           ...state,
+          transportStatus: 'online',
+          connectedAt: state.connectedAt ?? Date.now(),
+          lastTransportError: null,
+          status: resolveInRoomSyncStatus(state, 'online'),
           latencyMs,
           ...(state.roomRole === 'guest' && state.followHost && latencyMs > UNSTABLE_LATENCY_MS
             ? {
@@ -495,6 +499,9 @@ export default defineBackground(() => {
           addActivity(
             {
               ...state,
+              transportStatus: 'online',
+              connectedAt: state.connectedAt ?? Date.now(),
+              lastTransportError: null,
               peerCount: message.peerCount,
               targetPage: joinedPageState.targetPage,
               pendingFocusRequest: joinedPageState.pendingFocusRequest,
@@ -505,7 +512,7 @@ export default defineBackground(() => {
                     : state.followHost
                   : true,
               detachedReason: joinedPageState.openInCurrentTab ? null : state.detachedReason,
-              status: resolveInRoomSyncStatus(state, state.transportStatus),
+              status: resolveInRoomSyncStatus(state, 'online'),
             },
             `Connected to ${message.roomCode}`,
             'success',
@@ -840,6 +847,7 @@ export default defineBackground(() => {
 
   const handleLocalMediaState = async (
     tabId: number,
+    frameId: number,
     tabUrl: string | undefined,
     media: MediaSyncState,
   ) => {
@@ -848,6 +856,13 @@ export default defineBackground(() => {
 
     const pageUrl = tabUrl || media.url;
     if (latestState.roomRole !== 'host') return;
+
+    logActivity(
+      `media.candidate.detected tab=${tabId} frame=${frameId} media=${media.mediaId}`,
+      'info',
+      `media:candidate:${tabId}:${frameId}`,
+      MEDIA_ACTIVITY_THROTTLE_MS,
+    );
 
     const isCurrentTargetPage =
       latestState.targetPage != null && isRoomTargetUrl(latestState.targetPage, pageUrl);
@@ -1148,7 +1163,17 @@ export default defineBackground(() => {
     }
 
     if (message?.type === 'bsync:frame-local-media' && sender.tab?.id != null) {
-      void sendMessageToAllTabFrames(sender.tab.id, message);
+      void browser.tabs.sendMessage(
+        sender.tab.id,
+        {
+          type: 'bsync:frame-local-media',
+          payload: {
+            frameId: sender.frameId ?? -1,
+            media: message.payload ?? null,
+          },
+        },
+        { frameId: 0 },
+      ).catch(() => undefined);
       return;
     }
 
@@ -1167,7 +1192,12 @@ export default defineBackground(() => {
     }
 
     if (message.type === 'bsync:media-state') {
-      handleLocalMediaState(sender.tab.id, sender.tab.url, message.payload).catch(console.error);
+      handleLocalMediaState(
+        sender.tab.id,
+        sender.frameId ?? 0,
+        sender.tab.url,
+        message.payload,
+      ).catch(console.error);
       return;
     }
 
@@ -1183,7 +1213,7 @@ export default defineBackground(() => {
       pendingMediaApplyTimers.delete(applyKey);
 
       logActivity(
-        `Media applied: drift ${message.payload.driftSeconds}s, local ${getMediaActivityLabel(message.payload.after)}`,
+        `media.apply tab=${sender.tab.id} frame=${sender.frameId ?? 0} drift=${message.payload.driftSeconds}s local=${getMediaActivityLabel(message.payload.after)}`,
         message.payload.driftSeconds <= 1 ? 'success' : 'warning',
         `media:applied:${sender.tab.id}`,
         MEDIA_ACTIVITY_THROTTLE_MS,
@@ -1198,7 +1228,7 @@ export default defineBackground(() => {
       pendingMediaApplyTimers.delete(applyKey);
 
       logActivity(
-        `Media apply failed: ${message.payload.reason}`,
+        `media.apply.blocked tab=${sender.tab.id} frame=${sender.frameId ?? 0} reason=${message.payload.reason}`,
         'error',
         `media:apply-failed:${sender.tab.id}`,
         MEDIA_ACTIVITY_THROTTLE_MS,

@@ -8,6 +8,9 @@ export default defineConfig({
   autoIcons: {
     baseIconPath: 'public/logo.svg',
   },
+  zip: {
+    name: 'bsync',
+  },
   vite: () => ({
     plugins: [preact()],
   }),

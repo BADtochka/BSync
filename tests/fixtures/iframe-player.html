@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BSync iframe player fixture</title>
+    <style>
+      body { margin: 0; padding: 20px; color: #f1f6fa; background: #0b0f15; font: 16px sans-serif; }
+      video, canvas { display: block; width: min(800px, 100%); border: 1px solid #344154; }
+      button { margin: 12px 8px 12px 0; padding: 10px 16px; color: #65f3ff; background: transparent; border: 1px solid #65f3ff; }
+    </style>
+  </head>
+  <body>
+    <h1>Iframe player</h1>
+    <button id="play" type="button">Play</button>
+    <button id="replace" type="button">Replace media</button>
+    <div id="mount"></div>
+    <canvas id="source" width="800" height="450" hidden></canvas>
+    <script>
+      const mount = document.querySelector('#mount');
+      const canvas = document.querySelector('#source');
+      const context = canvas.getContext('2d');
+      let frame = 0;
+
+      function draw() {
+        frame += 1;
+        context.fillStyle = '#0e131b';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = '#65f3ff';
+        context.font = '48px monospace';
+        context.fillText(`BSync frame ${frame}`, 48, 220);
+        requestAnimationFrame(draw);
+      }
+
+      function createMedia() {
+        const video = document.createElement('video');
+        video.id = `fixture-video-${Date.now()}`;
+        video.controls = true;
+        video.muted = true;
+        video.srcObject = canvas.captureStream(30);
+        mount.replaceChildren(video);
+        return video;
+      }
+
+      draw();
+      const delay = Number(new URLSearchParams(location.search).get('delay') || 0);
+      let video;
+      setTimeout(() => { video = createMedia(); }, Number.isFinite(delay) ? delay : 0);
+      document.querySelector('#play').addEventListener('click', () => video?.play());
+      document.querySelector('#replace').addEventListener('click', () => {
+        const wasPlaying = video && !video.paused;
+        video = createMedia();
+        if (wasPlaying) void video.play();
+      });
+    </script>
+  </body>
+</html>

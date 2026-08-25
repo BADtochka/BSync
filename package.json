@@ -6,6 +6,9 @@
     "apps/*",
     "packages/*"
   ],
+  "devDependencies": {
+    "jszip": "3.10.1"
+  },
   "scripts": {
     "dev": "bun run --cwd apps/extension dev",
     "dev:extension": "bun run --cwd apps/extension dev",
@@ -15,6 +18,9 @@
     "build:firefox": "bun run --cwd apps/extension build:firefox",
     "zip": "bun run --cwd apps/extension zip",
     "zip:firefox": "bun run --cwd apps/extension zip:firefox",
+    "validate:artifact": "bun scripts/validate-extension-artifact.ts",
+    "publish:firefox": "bun scripts/publish-firefox-addons.ts",
+    "tools:versions": "bun scripts/print-release-tool-versions.ts",
     "version:extension": "bun scripts/bump-extension-version.ts",
     "publish:chrome": "bun scripts/publish-chrome-webstore.ts",
     "sync-server": "bun run --cwd apps/sync-server start",

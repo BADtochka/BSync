@@ -599,9 +599,10 @@ export function resolveInRoomSyncStatus(
   state: SyncState,
   transportStatus: TransportStatus = state.transportStatus,
 ): SyncStatus {
-  if (state.status === 'paused' || state.status === 'error') return state.status;
   if (state.roomRole === 'none') return state.status === 'connecting' ? 'connecting' : 'idle';
   if (transportStatus === 'connecting' || transportStatus === 'offline') return 'connecting';
+  if (transportStatus === 'error') return 'error';
+  if (state.status === 'paused') return 'paused';
   return 'synced';
 }
 
